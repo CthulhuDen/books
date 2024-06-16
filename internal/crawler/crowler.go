@@ -399,12 +399,12 @@ func (f *flibustaBooks) crawl() error {
 				if err == nil {
 					year = uint16(y)
 				} else {
-					f.logger.Error("Failed to parse book " + entry.ID + " year :" + err.Error())
+					l.Error("Failed to parse book " + entry.ID + " year :" + err.Error())
 				}
 			}
 
 			var genres []string
-			var seenGenres map[string]struct{}
+			seenGenres := make(map[string]struct{}, len(entry.Category))
 			for _, cat := range entry.Category {
 				if _, ok := seenGenres[cat.Term]; ok {
 					l.Warn("In the same book found duplicate of genre " + cat.Term)
@@ -417,11 +417,11 @@ func (f *flibustaBooks) crawl() error {
 			}
 
 			var authors []string
-			var seenAuthors map[string]struct{}
+			seenAuthors := make(map[string]struct{}, len(entry.Author))
 			for _, auth := range entry.Author {
 				s := regHrefAuthorAlt.FindStringSubmatch(auth.URI)
 				if len(s) == 0 {
-					f.logger.Error("Failed to parse author " + entry.ID + " from URI: " + auth.URI)
+					l.Error("Failed to parse author " + entry.ID + " from URI: " + auth.URI)
 					continue
 				}
 
@@ -495,7 +495,7 @@ func (f *flibustaBooks) crawl() error {
 
 			author := &types.Author{Id: id}
 
-			f.logger.Debug("Begin fetching author " + author.Id + " (" + authorUrl.Path + ") by consumer request")
+			l.Debug("Begin fetching author " + author.Id + " (" + authorUrl.Path + ") by consumer request")
 
 			_, err := (&flibustaAuthors{
 				client:   f.client,
