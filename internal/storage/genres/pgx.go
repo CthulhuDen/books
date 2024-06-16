@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/doug-martin/goqu/v9"
 	"github.com/georgysavva/scany/v2/pgxscan"
@@ -76,7 +77,7 @@ func (p *pgxRepo) GetByIds(ctx context.Context, ids ...uint16) (map[uint16]strin
 
 func (p *pgxRepo) GetIdByTitle(ctx context.Context, title string) (uint16, error) {
 	sql, params, err := p.g.From("genre").
-		Where(goqu.C("title").Eq(title)).
+		Where(goqu.L("lower(title)").Eq(strings.ToLower(title))).
 		ToSQL()
 	if err != nil {
 		return 0, err
@@ -100,8 +101,13 @@ func (p *pgxRepo) GetIdByTitles(ctx context.Context, titles ...string) (map[stri
 		return nil, nil
 	}
 
+	lowerTitles := make([]string, 0, len(titles))
+	for _, title := range titles {
+		lowerTitles = append(lowerTitles, strings.ToLower(title))
+	}
+
 	sql, params, err := p.g.From("genre").
-		Where(goqu.C("title").In(titles)).
+		Where(goqu.L("lower(title)").In(lowerTitles)).
 		ToSQL()
 	if err != nil {
 		return nil, err

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/opds-community/libopds2-go/opds1"
 
@@ -39,7 +41,7 @@ var (
 	regHrefAuthorAlt = regexp.MustCompile("^/a/(\\d+)$")
 	regHrefSequence  = regexp.MustCompile("^/opds/sequencebooks/\\d+$")
 
-	regTitleAuthorBooks = regexp.MustCompile("^Книги автора (.+)$")
+	regTitleAuthorBooks = regexp.MustCompile("^Книги автора\\s+(.+)$")
 )
 
 type Crawler interface {
@@ -102,17 +104,19 @@ func (f *flibustaAuthors) crawl() error {
 		return fmt.Errorf("fetching authors feed (reading response): %w", err)
 	}
 
+	l := f.logger.With(slog.String("feed", f.feed.Path))
+
 	var feed opds1.Feed
-	err = xml.Unmarshal(bs, &feed)
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
 
 	if err != nil {
 		f.logger.Error("Failed to unmarshal authors feed " + f.feed.Path + ": " + err.Error())
 		return fmt.Errorf("unmarshalling authors feed: %w", err)
 	}
 
-	l := f.logger.With(slog.String("feed", f.feed.Path))
-
 	for _, entry := range feed.Entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+
 		if regTagAuthors.MatchString(entry.ID) {
 			l.Debug("Found nested feed " + entry.ID)
 
@@ -146,7 +150,7 @@ func (f *flibustaAuthors) crawl() error {
 
 			author := &types.Author{
 				Id:   entry.ID,
-				Name: entry.Title,
+				Name: strings.TrimSpace(entry.Title),
 			}
 
 			link := chooseLink(&entry, func(link *opds1.Link) string {
@@ -247,17 +251,19 @@ func (f *flibustaAuthors) fillInfo(authorUrl *url.URL, author *types.Author) (*u
 		return nil, fmt.Errorf("fetching author description (reading response): %w", err)
 	}
 
+	l := f.logger.With(slog.String("author", author.Id))
+
 	var feed opds1.Feed
-	err = xml.Unmarshal(bs, &feed)
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
 
 	if err != nil {
 		f.logger.Error("Failed to unmarshal author description " + authorUrl.Path + ": " + err.Error())
 		return nil, fmt.Errorf("unmarshalling author description: %w", err)
 	}
 
-	l := f.logger.With(slog.String("author", author.Id))
-
 	if author.Name == "" {
+		feed.Title = strings.TrimSpace(feed.Title)
+
 		s := regTitleAuthorBooks.FindStringSubmatch(feed.Title)
 		if len(s) == 0 {
 			f.logger.Error("Failed to find author name from feed title " + authorUrl.Path + ": " + feed.Title)
@@ -270,6 +276,8 @@ func (f *flibustaAuthors) fillInfo(authorUrl *url.URL, author *types.Author) (*u
 	var booksLink *url.URL
 
 	for _, entry := range feed.Entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+
 		if regTagBio.MatchString(entry.ID) {
 			l.Debug("Found author description " + entry.ID)
 			foundBio = true
@@ -369,8 +377,10 @@ func (f *flibustaBooks) crawl() error {
 		return fmt.Errorf("fetching books feed (reading response): %w", err)
 	}
 
+	l := f.logger.With(slog.String("feed", f.feed.Path))
+
 	var feed opds1.Feed
-	err = xml.Unmarshal(bs, &feed)
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
 
 	if err != nil {
 		f.logger.Error("Failed to unmarshal books feed " + f.feed.Path + ": " + err.Error())
@@ -380,9 +390,9 @@ func (f *flibustaBooks) crawl() error {
 	var bks []*types.Book
 	seenBooks := make(map[string]struct{}, len(feed.Entries))
 
-	l := f.logger.With(slog.String("feed", f.feed.Path))
-
 	for _, entry := range feed.Entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+
 		if regTagBook.MatchString(entry.ID) {
 			l.Debug("Found book " + entry.ID)
 
@@ -394,6 +404,7 @@ func (f *flibustaBooks) crawl() error {
 			seenBooks[entry.ID] = struct{}{}
 
 			var year uint16
+			entry.Issued = strings.TrimSpace(entry.Issued)
 			if entry.Issued != "" {
 				y, err := strconv.ParseUint(entry.Issued, 10, 16)
 				if err == nil {
@@ -406,12 +417,14 @@ func (f *flibustaBooks) crawl() error {
 			var genres []string
 			seenGenres := make(map[string]struct{}, len(entry.Category))
 			for _, cat := range entry.Category {
-				if _, ok := seenGenres[cat.Term]; ok {
+				cat.Term = strings.TrimSpace(cat.Term)
+
+				if _, ok := seenGenres[strings.ToLower(cat.Term)]; ok {
 					l.Warn("In the same book found duplicate of genre " + cat.Term)
 					continue
 				}
 
-				seenGenres[cat.Term] = struct{}{}
+				seenGenres[strings.ToLower(cat.Term)] = struct{}{}
 
 				genres = append(genres, cat.Term)
 			}
@@ -464,10 +477,10 @@ func (f *flibustaBooks) crawl() error {
 
 			bks = append(bks, &types.Book{
 				Id:       entry.ID,
-				Title:    entry.Title,
+				Title:    strings.TrimSpace(entry.Title),
 				Authors:  authors,
 				Genres:   genres,
-				Language: entry.Language,
+				Language: strings.TrimSpace(entry.Language),
 				Year:     year,
 				About:    entry.Content.Content,
 				Cover:    cover,
@@ -587,17 +600,19 @@ func (f *flibustaSeries) crawl() error {
 		return fmt.Errorf("fetching series feed (reading response): %w", err)
 	}
 
+	l := f.logger.With(slog.String("feed", f.feed.Path))
+
 	var feed opds1.Feed
-	err = xml.Unmarshal(bs, &feed)
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
 
 	if err != nil {
 		f.logger.Error("Failed to unmarshal series feed " + f.feed.Path + ": " + err.Error())
 		return fmt.Errorf("unmarshalling series feed: %w", err)
 	}
 
-	l := f.logger.With(slog.String("feed", f.feed.Path))
-
 	for _, entry := range feed.Entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+
 		if regTagSeries.MatchString(entry.ID) {
 			l.Debug("Found nested feed " + entry.ID)
 
@@ -631,7 +646,7 @@ func (f *flibustaSeries) crawl() error {
 
 			series := &types.Series{
 				Id:    entry.ID,
-				Title: entry.Title,
+				Title: strings.TrimSpace(entry.Title),
 			}
 
 			link := chooseLink(&entry, func(link *opds1.Link) string {
@@ -702,20 +717,22 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 		return fmt.Errorf("fetching series description (reading response): %w", err)
 	}
 
+	l := f.logger.With(slog.String("series", series.Id))
+
 	var feed opds1.Feed
-	err = xml.Unmarshal(bs, &feed)
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
 
 	if err != nil {
 		f.logger.Error("Failed to unmarshal series description " + seriesUrl.Path + ": " + err.Error())
 		return fmt.Errorf("unmarshalling series description: %w", err)
 	}
 
-	l := f.logger.With(slog.String("series", series.Id))
-
 	var bookIds []string
 	seenBookIds := make(map[string]struct{}, len(feed.Entries))
 
 	for _, entry := range feed.Entries {
+		entry.ID = strings.TrimSpace(entry.ID)
+
 		if regTagBook.MatchString(entry.ID) {
 			if _, ok := seenBookIds[entry.ID]; ok {
 				l.Warn("Found duplicate of book " + entry.ID)
@@ -755,6 +772,9 @@ func chooseLink(e *opds1.Entry, matcher func(link *opds1.Link) string, l clLogge
 	var ret *opds1.Link
 
 	for _, link := range e.Links {
+		link.Rel = strings.TrimSpace(link.Rel)
+		link.TypeLink = strings.TrimSpace(link.TypeLink)
+
 		if matcher != nil {
 			mismatch := matcher(&link)
 			if mismatch != "" {
@@ -775,4 +795,44 @@ func chooseLink(e *opds1.Entry, matcher func(link *opds1.Link) string, l clLogge
 	}
 
 	return ret
+}
+
+// Inspect each rune for being a disallowed character.
+// Fucking litres sometimes include those characters
+func removeDisallowedCodepoints(bs []byte, l *slog.Logger) []byte {
+	ret := bs[:0]
+	buf := bs
+
+	for len(buf) > 0 {
+		r, size := utf8.DecodeRune(buf)
+		if r == utf8.RuneError && size == 1 {
+			l.Warn("Going to fail XML parsing because the bytes do not represent valid UTF8")
+			// invalid UTF-8, hope it doesn't come to this
+			return bs
+		}
+
+		if isInCharacterRange(r) {
+			ret = append(ret, buf[:size]...)
+		} else {
+			l.Warn("Removed invalid rune from XML")
+		}
+
+		buf = buf[size:]
+	}
+
+	return ret
+}
+
+// Decide whether the given rune is in the XML Character Range, per
+// the Char production of https://www.xml.com/axml/testaxml.htm,
+// Section 2.2 Characters.
+//
+// Stolen from /usr/local/go/src/encoding/xml/xml.go
+func isInCharacterRange(r rune) (inrange bool) {
+	return r == 0x09 ||
+		r == 0x0A ||
+		r == 0x0D ||
+		r >= 0x20 && r <= 0xD7FF ||
+		r >= 0xE000 && r <= 0xFFFD ||
+		r >= 0x10000 && r <= 0x10FFFF
 }

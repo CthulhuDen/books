@@ -27,14 +27,15 @@ create table book_author
     primary key (author_id, book_id)
 );
 
-create index "author_by_book" on book_author (book_id, author_order);
+create index author_by_book on book_author (book_id, author_order);
 
 create table genre
 (
     id    serial primary key,
-    title varchar(1023) not null,
-    constraint "genre_by_title" unique (title)
+    title varchar(1023) not null
 );
+
+create unique index genre_by_title on genre (lower(title));
 
 create table book_genre
 (
@@ -43,7 +44,7 @@ create table book_genre
     primary key (book_id, genre_id)
 );
 
-create index "book_by_genre" on book_genre (genre_id);
+create index book_by_genre on book_genre (genre_id);
 
 create table series
 (
@@ -53,13 +54,13 @@ create table series
 
 create table book_series
 (
-    book_id   varchar(255) not null references book,
-    series_id varchar(255) not null references series,
-    book_order smallint null default null,
+    book_id    varchar(255) not null references book,
+    series_id  varchar(255) not null references series,
+    book_order smallint     null default null,
     primary key (book_id, series_id)
 );
 
-create index "book_by_series" on book_series (series_id, book_order);
+create index book_by_series on book_series (series_id, book_order);
 
 -- +goose StatementEnd
 
