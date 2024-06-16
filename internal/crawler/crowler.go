@@ -404,11 +404,20 @@ func (f *flibustaBooks) crawl() error {
 			}
 
 			var genres []string
+			var seenGenres map[string]struct{}
 			for _, cat := range entry.Category {
+				if _, ok := seenGenres[cat.Term]; ok {
+					l.Warn("In the same book found duplicate of genre " + cat.Term)
+					continue
+				}
+
+				seenGenres[cat.Term] = struct{}{}
+
 				genres = append(genres, cat.Term)
 			}
 
 			var authors []string
+			var seenAuthors map[string]struct{}
 			for _, auth := range entry.Author {
 				s := regHrefAuthorAlt.FindStringSubmatch(auth.URI)
 				if len(s) == 0 {
@@ -416,7 +425,16 @@ func (f *flibustaBooks) crawl() error {
 					continue
 				}
 
-				authors = append(authors, fmt.Sprintf(authorIdTemplate, s[1]))
+				authorId := fmt.Sprintf(authorIdTemplate, s[1])
+
+				if _, ok := seenAuthors[authorId]; ok {
+					l.Warn("In the same book found duplicate of author " + authorId)
+					continue
+				}
+
+				seenAuthors[authorId] = struct{}{}
+
+				authors = append(authors, authorId)
 			}
 
 			coverLink := chooseLink(&entry, func(link *opds1.Link) string {
@@ -695,15 +713,17 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 	l := f.logger.With(slog.String("series", series.Id))
 
 	var bookIds []string
-	seenBookIds := make(map[string]struct{})
+	seenBookIds := make(map[string]struct{}, len(feed.Entries))
 
 	for _, entry := range feed.Entries {
 		if regTagBook.MatchString(entry.ID) {
 			if _, ok := seenBookIds[entry.ID]; ok {
-				l.Warn("Found duplicate book id " + entry.ID)
+				l.Warn("Found duplicate of book " + entry.ID)
 				continue
 			}
+
 			seenBookIds[entry.ID] = struct{}{}
+
 			bookIds = append(bookIds, entry.ID)
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
