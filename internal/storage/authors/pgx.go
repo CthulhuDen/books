@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/doug-martin/goqu/v9"
 	"github.com/georgysavva/scany/v2/pgxscan"
@@ -42,11 +43,16 @@ func (a *pgxAuthor) intoCommon(l *slog.Logger, ctx context.Context) *types.Autho
 		}
 	}
 
+	us := ""
+	if u != nil {
+		us = u.String()
+	}
+
 	return &types.Author{
 		Id:     a.Id,
 		Name:   a.Name,
 		Bio:    a.Bio,
-		Avatar: u,
+		Avatar: us,
 	}
 }
 
@@ -105,16 +111,11 @@ func (p *pgxRepo) Save(ctx context.Context, authors ...*types.Author) error {
 
 	rows := make([]any, 0, len(authors))
 	for _, author := range authors {
-		us := ""
-		if author.Avatar != nil {
-			us = author.Avatar.String()
-		}
-
 		rows = append(rows, pgxAuthor{
 			Id:        author.Id,
 			Name:      author.Name,
 			Bio:       author.Bio,
-			AvatarUrl: us,
+			AvatarUrl: author.Avatar,
 		})
 	}
 
@@ -132,4 +133,51 @@ func (p *pgxRepo) Save(ctx context.Context, authors ...*types.Author) error {
 
 	_, err = p.pg.Exec(ctx, sql, params...)
 	return err
+}
+
+func (p *pgxRepo) Search(ctx context.Context, query string, limit int, genreIds []uint16) ([]*types.Author, error) {
+	qb := p.g.From("author").
+		Order(goqu.C("name").Asc()).
+		Limit(uint(limit))
+
+	for _, word := range strings.Split(query, " ") {
+		word = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(word),
+			"\\", "\\\\"),
+			"_", "\\_"),
+			"%", "\\%")
+		if word != "" {
+			qb = qb.Where(goqu.C("name").ILike("%" + word + "%"))
+		}
+	}
+
+	if len(genreIds) > 0 {
+		qb = qb.Where(goqu.C("id").In(
+			goqu.Select("author_id").
+				From("book_author").
+				Where(goqu.C("book_id").In(
+					goqu.Select("book_id").
+						From("book_genre").
+						Where(goqu.C("genre_id").In(genreIds)),
+				)),
+		))
+	}
+
+	sql, params, err := qb.ToSQL()
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []pgxAuthor
+
+	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]*types.Author, 0, len(rows))
+	for _, row := range rows {
+		ret = append(ret, row.intoCommon(p.l, ctx))
+	}
+
+	return ret, nil
 }

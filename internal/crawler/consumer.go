@@ -29,7 +29,7 @@ type LoggerConsumer struct {
 
 func (c *LoggerConsumer) ConsumeAuthor(author *types.Author) error {
 	suffixAva := ""
-	if author.Avatar != nil {
+	if author.Avatar != "" {
 		suffixAva = " with avatar"
 	}
 

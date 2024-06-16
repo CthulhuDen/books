@@ -13,4 +13,6 @@ type Repository interface {
 	GetIdByTitles(ctx context.Context, titles ...string) (map[string]uint16, error)
 
 	Insert(ctx context.Context, titles ...string) (map[string]uint16, error)
+
+	GetAll(ctx context.Context) ([]string, error)
 }

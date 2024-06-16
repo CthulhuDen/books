@@ -10,13 +10,15 @@ RUN go mod download
 COPY . ./
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /crawler ./cmd/crawler
+RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./cmd/server
 
 FROM alpine
 
 COPY --from=build /go/bin/goose /
 COPY --from=build /crawler /
+COPY --from=build /server /
 COPY db /db
 
-#EXPOSE 8080
+EXPOSE 8080
 
-#CMD ["/crawler"] # require explicit command, at least crawler shouldn't be default
+CMD ["/server"]

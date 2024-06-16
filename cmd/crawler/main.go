@@ -41,23 +41,13 @@ func main() {
 	_, thisFile, _, _ := runtime.Caller(0)
 
 	var lvl slog.Level
-	invalidLvl := false
-	switch logLevel {
-	case "debug":
+	err := lvl.UnmarshalText([]byte(logLevel))
+	if err != nil {
 		lvl = slog.LevelDebug
-	case "info":
-		lvl = slog.LevelInfo
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelDebug
-		invalidLvl = true
 	}
 	logger.SetupSLog(lvl, path.Dir(path.Dir(path.Dir(thisFile))), struct{}{})
 
-	if invalidLvl {
+	if err != nil {
 		slog.Error("Invalid log level specified in LOG_LEVEL, one of debug, info, warn or error expected")
 		os.Exit(1)
 	}

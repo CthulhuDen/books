@@ -3,9 +3,9 @@ package books
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/doug-martin/goqu/v9"
 	"github.com/georgysavva/scany/v2/pgxscan"
@@ -13,6 +13,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"books/internal/types"
+)
+
+var (
+	subAuthors = goqu.Select(goqu.L("array_agg(author_id order by author_order)")).
+			From("book_author").
+			Where(goqu.C("book_id").Eq(goqu.C("id")))
+	subGenres = goqu.Select(goqu.L("array_agg(genre.title order by genre.title)")).
+			From("book_genre").
+			Join(goqu.T("genre"), goqu.On(
+			goqu.C("id").Table("genre").
+				Eq(goqu.C("genre_id")),
+		)).
+		Where(goqu.C("book_id").Eq(goqu.C("id").Table("book")))
+	subSequences = goqu.Select(goqu.L("jsonb_object_agg(series_id, book_order)")).
+			From("book_series").
+			Where(goqu.C("book_id").Eq(goqu.C("id")))
 )
 
 func NewPGXRepository(pg *pgxpool.Pool, l *slog.Logger) Repository {
@@ -34,7 +50,15 @@ type pgxBook struct {
 	CoverUrl string `db:"cover_url"`
 }
 
-func (b *pgxBook) intoCommon(authors []string, genres []string, series []types.InSeries,
+type pgxBookRealFull struct {
+	Base      pgxBook  `db:""` // follow
+	AuthorIds []string `db:"authors"`
+	Genres    []string `db:"genres"`
+	Sequences any      `db:"sequences"`
+	Groupings any      `db:"groupings"`
+}
+
+func (b *pgxBook) intoCommon(authors []string, genres []string, sequences map[string]any,
 	l *slog.Logger, ctx context.Context) *types.Book {
 
 	var u *url.URL
@@ -47,6 +71,16 @@ func (b *pgxBook) intoCommon(authors []string, genres []string, series []types.I
 		}
 	}
 
+	us := ""
+	if u != nil {
+		us = u.String()
+	}
+
+	series := make([]types.InSeries, 0, len(sequences))
+	for id, order := range sequences {
+		series = append(series, types.InSeries{Id: id, Order: uint16(order.(float64))})
+	}
+
 	return &types.Book{
 		Id:       b.Id,
 		Title:    b.Title,
@@ -56,90 +90,23 @@ func (b *pgxBook) intoCommon(authors []string, genres []string, series []types.I
 		Language: b.Language,
 		Year:     b.Year,
 		About:    b.About,
-		Cover:    u,
+		Cover:    us,
 	}
-}
-
-func (p *pgxRepo) getAuthorsByBook(ctx context.Context, bookId string) ([]string, error) {
-	sql, params, err := p.g.From("book_author").
-		Select("author_id").
-		Where(goqu.C("book_id").Eq(bookId)).
-		Order(goqu.C("author_order").Asc()).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []string
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	return rows, nil
-}
-
-func (p *pgxRepo) getGenresByBook(ctx context.Context, bookId string) ([]string, error) {
-	sql, params, err := p.g.From("book_genre").
-		Join(goqu.T("genre"), goqu.On(goqu.C("genre_id").Eq(goqu.C("id")))).
-		Select("title").
-		Where(goqu.C("book_id").Eq(bookId)).
-		Order(goqu.C("title").Asc()).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []string
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	return rows, nil
-}
-
-func (p *pgxRepo) getSeriesByBook(ctx context.Context, bookId string) ([]types.InSeries, error) {
-	sql, params, err := p.g.From("book_series").
-		Select("series_id", "book_order").
-		Where(goqu.C("book_id").Eq(bookId)).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []struct {
-		SeriesId  string `json:"series_id"`
-		BookOrder uint16 `json:"book_order"`
-	}
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make([]types.InSeries, 0, len(rows))
-	for _, row := range rows {
-		ret = append(ret, types.InSeries{
-			Id:       row.SeriesId,
-			Position: row.BookOrder,
-		})
-	}
-
-	return ret, nil
 }
 
 func (p *pgxRepo) GetById(ctx context.Context, id string) (*types.Book, error) {
 	sql, params, err := p.g.From("book").
+		Select("*",
+			subAuthors.As("authors"),
+			subGenres.As("genres"),
+			subSequences.As("sequences")).
 		Where(goqu.C("id").Eq(id)).
 		ToSQL()
 	if err != nil {
 		return nil, err
 	}
 
-	var row pgxBook
+	var row pgxBookRealFull
 
 	err = pgxscan.Get(ctx, p.pg, &row, sql, params...)
 	if err != nil {
@@ -149,122 +116,7 @@ func (p *pgxRepo) GetById(ctx context.Context, id string) (*types.Book, error) {
 		return nil, err
 	}
 
-	authors, err := p.getAuthorsByBook(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("querying book authors: %w", err)
-	}
-
-	genres, err := p.getGenresByBook(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("querying book genres: %w", err)
-	}
-
-	series, err := p.getSeriesByBook(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("querying book series: %w", err)
-	}
-
-	return row.intoCommon(authors, genres, series, p.l, ctx), nil
-}
-
-func (p *pgxRepo) getAuthorsByBooks(ctx context.Context, bookIds ...string) (map[string][]string, error) {
-	if len(bookIds) == 0 {
-		return map[string][]string{}, nil
-	}
-
-	sql, params, err := p.g.From("book_author").
-		Select("book_id", "author_id").
-		Where(goqu.C("book_id").In(bookIds)).
-		Order(goqu.C("author_order").Asc()).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []struct {
-		BookId   string `db:"book_id"`
-		AuthorId string `db:"author_id"`
-	}
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make(map[string][]string, len(bookIds))
-	for _, row := range rows {
-		ret[row.BookId] = append(ret[row.BookId], row.AuthorId)
-	}
-
-	return ret, nil
-}
-
-func (p *pgxRepo) getGenresByBooks(ctx context.Context, bookIds ...string) (map[string][]string, error) {
-	if len(bookIds) == 0 {
-		return map[string][]string{}, nil
-	}
-
-	sql, params, err := p.g.From("book_genre").
-		Join(goqu.T("genre"), goqu.On(goqu.C("genre_id").Eq(goqu.C("id")))).
-		Select("book_id", "title").
-		Where(goqu.C("book_id").In(bookIds)).
-		Order(goqu.C("title").Asc()).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []struct {
-		BookId string `db:"book_id"`
-		Title  string `db:"title"`
-	}
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make(map[string][]string, len(bookIds))
-	for _, row := range rows {
-		ret[row.BookId] = append(ret[row.BookId], row.Title)
-	}
-
-	return ret, nil
-}
-
-func (p *pgxRepo) getSeriesByBooks(ctx context.Context, bookIds ...string) (map[string][]types.InSeries, error) {
-	if len(bookIds) == 0 {
-		return map[string][]types.InSeries{}, nil
-	}
-
-	sql, params, err := p.g.From("book_series").
-		Select("book_id", "series_id", "book_order").
-		Where(goqu.C("book_id").In(bookIds)).
-		ToSQL()
-	if err != nil {
-		return nil, err
-	}
-
-	var rows []struct {
-		BookId    string `db:"book_id"`
-		SeriesId  string `json:"series_id"`
-		BookOrder uint16 `json:"book_order"`
-	}
-
-	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make(map[string][]types.InSeries, len(bookIds))
-	for _, row := range rows {
-		ret[row.BookId] = append(ret[row.BookId], types.InSeries{
-			Id:       row.SeriesId,
-			Position: row.BookOrder,
-		})
-	}
-
-	return ret, nil
+	return row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx), nil
 }
 
 func (p *pgxRepo) GetByIds(ctx context.Context, ids ...string) (map[string]*types.Book, error) {
@@ -273,46 +125,26 @@ func (p *pgxRepo) GetByIds(ctx context.Context, ids ...string) (map[string]*type
 	}
 
 	sql, params, err := p.g.From("book").
+		Select("*",
+			subAuthors.As("authors"),
+			subGenres.As("genres"),
+			subSequences.As("sequences")).
 		Where(goqu.C("id").In(ids)).
 		ToSQL()
 	if err != nil {
 		return nil, err
 	}
 
-	var rows []pgxBook
+	var rows []pgxBookRealFull
 
 	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(rows) == 0 {
-		return make(map[string]*types.Book), nil
-	}
-
-	ids = ids[:0]
+	ret := make(map[string]*types.Book, len(rows))
 	for _, row := range rows {
-		ids = append(ids, row.Id)
-	}
-
-	authors, err := p.getAuthorsByBooks(ctx, ids...)
-	if err != nil {
-		return nil, fmt.Errorf("querying books authors: %w", err)
-	}
-
-	genres, err := p.getGenresByBooks(ctx, ids...)
-	if err != nil {
-		return nil, fmt.Errorf("querying books genres: %w", err)
-	}
-
-	series, err := p.getSeriesByBooks(ctx, ids...)
-	if err != nil {
-		return nil, fmt.Errorf("querying books series: %w", err)
-	}
-
-	ret := make(map[string]*types.Book, len(ids))
-	for _, row := range rows {
-		ret[row.Id] = row.intoCommon(authors[row.Id], genres[row.Id], series[row.Id], p.l, ctx)
+		ret[row.Base.Id] = row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx)
 	}
 
 	return ret, nil
@@ -325,18 +157,13 @@ func (p *pgxRepo) Save(ctx context.Context, books ...*types.Book) error {
 
 	rows := make([]any, 0, len(books))
 	for _, book := range books {
-		us := ""
-		if book.Cover != nil {
-			us = book.Cover.String()
-		}
-
 		rows = append(rows, pgxBook{
 			Id:       book.Id,
 			Title:    book.Title,
 			Language: book.Language,
 			Year:     book.Year,
 			About:    book.About,
-			CoverUrl: us,
+			CoverUrl: book.Cover,
 		})
 	}
 
@@ -486,4 +313,144 @@ func (p *pgxRepo) LinkSeriesWithBooks(ctx context.Context, seriesId string, book
 
 	_, err = p.pg.Exec(ctx, sql, params...)
 	return err
+}
+
+func (p *pgxRepo) Search(ctx context.Context, query string, limit int, offset int,
+	authorId string, genreIds []uint16, seriesId string,
+	groupings ...GroupingType) ([]BookInGroup, error) {
+
+	qb := p.g.From("book").
+		Select("book.*",
+			subAuthors.As("authors"),
+			subGenres.As("genres"),
+			subSequences.As("sequences")).
+		Limit(uint(limit))
+
+	if offset != 0 {
+		qb = qb.Offset(uint(offset))
+	}
+
+	groupingExprs := make([]string, 0, len(groupings))
+	groupingPostProcess := make([]func(row *pgxBookRealFull) Grouping, 0, len(groupings))
+
+	seenGrouping := make(map[GroupingType]struct{}, len(groupings))
+	for _, grouping := range groupings {
+		if _, ok := seenGrouping[grouping]; ok {
+			continue
+		}
+
+		seenGrouping[grouping] = struct{}{}
+
+		switch grouping {
+		case GroupByAuthor:
+			groupIx := len(groupingExprs)
+			groupingPostProcess = append(groupingPostProcess, func(row *pgxBookRealFull) Grouping {
+				return Grouping{ByAuthor: row.Groupings.([]any)[groupIx].(string)}
+			})
+			groupingExprs = append(groupingExprs, "book_author.author_id")
+			qb = qb.
+				Join(goqu.T("book_author"), goqu.On(
+					goqu.C("id").Eq(goqu.C("book_id").Table("book_author")),
+				)).
+				OrderAppend(goqu.C("author_id").Asc())
+		case GroupBySeries:
+			groupIx := len(groupingExprs)
+			groupingPostProcess = append(groupingPostProcess, func(row *pgxBookRealFull) Grouping {
+				return Grouping{BySeries: row.Groupings.([]any)[groupIx].(string)}
+			})
+			groupingExprs = append(groupingExprs, "book_series.series_id")
+
+			if seriesId == "" {
+				qb = qb.
+					Join(goqu.T("book_series"), goqu.On(
+						goqu.C("id").Eq(goqu.C("book_id").Table("book_series")),
+					)).
+					OrderAppend(goqu.C("series_id").Asc())
+			}
+		case GroupByGenres:
+			groupingPostProcess = append(groupingPostProcess, func(row *pgxBookRealFull) Grouping {
+				return Grouping{ByGenres: row.Genres}
+			})
+
+			qb = qb.OrderAppend(goqu.C("genres").Asc())
+		}
+	}
+
+	if len(groupingExprs) != 0 {
+		qb = qb.SelectAppend(
+			goqu.L("jsonb_build_array(" + strings.Join(groupingExprs, ", ") + ")").
+				As("groupings"),
+		)
+	}
+
+	query = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(query),
+		"\\", "\\\\"),
+		"_", "\\_"),
+		"%", "\\%")
+	if query != "" {
+		qb = qb.Where(goqu.C("title").ILike("%" + query + "%"))
+	}
+
+	authorId = strings.TrimSpace(authorId)
+	if authorId != "" {
+		qb = qb.Where(goqu.C("id").In(
+			goqu.Select("book_id").
+				From("book_author").
+				Where(goqu.C("author_id").Eq(authorId)),
+		))
+	}
+
+	if len(genreIds) > 0 {
+		qb = qb.Where(goqu.C("id").In(
+			goqu.Select("book_id").
+				From("book_genre").
+				Where(goqu.C("genre_id").In(genreIds)),
+		))
+	}
+
+	seriesId = strings.TrimSpace(seriesId)
+	if seriesId != "" {
+		qb = qb.
+			//SelectAppend("book_order").
+			Join(goqu.T("book_series"), goqu.On(
+				goqu.C("id").
+					Eq(goqu.C("book_id").Table("book_series")),
+			)).
+			//Where(goqu.C("id").In(
+			//	goqu.Select("book_id").
+			//		From("book_series").
+			//		Where(goqu.C("series_id").Eq(seriesId)),
+			//)).
+			Where(goqu.C("series_id").Eq(seriesId)).
+			OrderAppend(goqu.C("book_order").Asc())
+	}
+
+	sql, params, err := qb.
+		OrderAppend(goqu.C("title").Asc()).
+		ToSQL()
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []pgxBookRealFull
+
+	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]BookInGroup, 0, len(rows))
+	for _, row := range rows {
+		groupings := make([]Grouping, 0, len(groupingPostProcess))
+		for _, pp := range groupingPostProcess {
+			groupings = append(groupings, pp(&row))
+		}
+
+		ret = append(ret, BookInGroup{
+			Groups: groupings,
+			Book:   row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx),
+		})
+	}
+
+	return ret, nil
 }

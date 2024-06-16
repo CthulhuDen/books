@@ -160,17 +160,15 @@ func (p *pgxRepo) Insert(ctx context.Context, titles ...string) (map[string]uint
 		ret[row.Title] = row.Id
 	}
 
-	numMissing := 0
+	var misssingTitles []string
 	for _, title := range titles {
 		if _, ok := ret[title]; !ok {
-			titles[numMissing] = title
-			numMissing += 1
+			misssingTitles = append(misssingTitles, title)
 		}
 	}
 
-	titles = titles[:numMissing]
-	if len(titles) > 0 {
-		moreIds, err := p.GetIdByTitles(ctx, titles...)
+	if len(misssingTitles) > 0 {
+		moreIds, err := p.GetIdByTitles(ctx, misssingTitles...)
 		if err != nil {
 			return nil, err
 		}
@@ -181,4 +179,22 @@ func (p *pgxRepo) Insert(ctx context.Context, titles ...string) (map[string]uint
 	}
 
 	return ret, nil
+}
+
+func (p *pgxRepo) GetAll(ctx context.Context) ([]string, error) {
+	sql, params, err := p.g.From("genre").
+		Select(goqu.C("title")).
+		ToSQL()
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []string
+
+	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	return rows, nil
 }

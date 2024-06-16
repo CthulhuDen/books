@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/doug-martin/goqu/v9"
 	"github.com/georgysavva/scany/v2/pgxscan"
@@ -107,4 +108,63 @@ func (p *pgxRepo) Save(ctx context.Context, sequences ...*types.Series) error {
 
 	_, err = p.pg.Exec(ctx, sql, params...)
 	return err
+}
+
+func (p *pgxRepo) Search(ctx context.Context, query string, limit int,
+	authorId string, genreIds []uint16) ([]*types.Series, error) {
+
+	qb := p.g.From("series").
+		Order(goqu.C("title").Asc()).
+		Limit(uint(limit))
+
+	query = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(query),
+		"\\", "\\\\"),
+		"_", "\\_"),
+		"%", "\\%")
+	if query != "" {
+		qb = qb.Where(goqu.C("title").ILike("%" + query + "%"))
+	}
+
+	authorId = strings.ToLower(authorId)
+	if authorId != "" || len(genreIds) > 0 {
+		sub := goqu.Select("series_id").
+			From("book_series")
+
+		if authorId != "" {
+			sub = sub.Where(goqu.C("book_id").In(
+				goqu.Select("book_id").
+					From("book_author").
+					Where(goqu.C("author_id").Eq(authorId)),
+			))
+		}
+
+		if len(genreIds) > 0 {
+			sub = sub.Where(goqu.C("book_id").In(
+				goqu.Select("book_id").
+					From("book_genre").
+					Where(goqu.C("genre_id").In(genreIds)),
+			))
+		}
+
+		qb = qb.Where(goqu.C("id").In(sub))
+	}
+
+	sql, params, err := qb.ToSQL()
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []pgxSeries
+
+	err = pgxscan.Select(ctx, p.pg, &rows, sql, params...)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]*types.Series, 0, len(rows))
+	for _, row := range rows {
+		ret = append(ret, &types.Series{Id: row.Id, Title: row.Title})
+	}
+
+	return ret, nil
 }

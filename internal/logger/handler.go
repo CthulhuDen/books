@@ -83,7 +83,7 @@ func (e *handler) Handle(ctx context.Context, record slog.Record) error {
 	}))
 
 	if requestId := ctx.Value(e.requestIdKey); requestId != nil {
-		record.AddAttrs(slog.String("request_id", requestId.(string)))
+		record.AddAttrs(slog.Any("request_id", requestId))
 	}
 
 	return e.baseHandler.Handle(ctx, record)

@@ -305,7 +305,7 @@ func (f *flibustaAuthors) fillInfo(authorUrl *url.URL, author *types.Author) (*u
 					continue
 				}
 
-				author.Avatar = authorUrl.ResolveReference(linkUrl)
+				author.Avatar = authorUrl.ResolveReference(linkUrl).String()
 			}
 		} else if regTagAuthorBooks.MatchString(entry.ID) {
 			if booksLink != nil {
@@ -475,6 +475,11 @@ func (f *flibustaBooks) crawl() error {
 				}
 			}
 
+			cs := ""
+			if cover != nil {
+				cs = cover.String()
+			}
+
 			bks = append(bks, &types.Book{
 				Id:       entry.ID,
 				Title:    strings.TrimSpace(entry.Title),
@@ -483,7 +488,7 @@ func (f *flibustaBooks) crawl() error {
 				Language: strings.TrimSpace(entry.Language),
 				Year:     year,
 				About:    entry.Content.Content,
-				Cover:    cover,
+				Cover:    cs,
 			})
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)

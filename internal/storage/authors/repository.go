@@ -12,4 +12,6 @@ type Repository interface {
 	GetByIds(ctx context.Context, ids ...string) (map[string]*types.Author, error)
 
 	Save(ctx context.Context, authors ...*types.Author) error
+
+	Search(ctx context.Context, query string, limit int, genreIds []uint16) ([]*types.Author, error)
 }

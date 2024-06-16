@@ -6,6 +6,14 @@ import (
 	"books/internal/types"
 )
 
+type GroupingType string
+
+const (
+	GroupByAuthor GroupingType = "author"
+	GroupByGenres GroupingType = "genres"
+	GroupBySeries GroupingType = "series"
+)
+
 type Repository interface {
 	GetById(ctx context.Context, id string) (*types.Book, error)
 	// GetByIds shall return map with NON-NULLS!
@@ -16,4 +24,8 @@ type Repository interface {
 	LinkBookAndAuthors(ctx context.Context, bookId string, authorIds ...string) error
 	LinkBookAndGenres(ctx context.Context, bookId string, genreIds ...uint16) error
 	LinkSeriesWithBooks(ctx context.Context, seriesId string, bookIds ...string) error
+
+	Search(ctx context.Context, query string, limit int, offset int,
+		authorId string, genreIds []uint16, seriesId string,
+		groupings ...GroupingType) ([]BookInGroup, error)
 }
