@@ -144,7 +144,8 @@ func (p *pgxRepo) GetByIds(ctx context.Context, ids ...string) (map[string]*type
 
 	ret := make(map[string]*types.Book, len(rows))
 	for _, row := range rows {
-		ret[row.Base.Id] = row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx)
+		seqs, _ := row.Sequences.(map[string]any)
+		ret[row.Base.Id] = row.Base.intoCommon(row.AuthorIds, row.Genres, seqs, p.l, ctx)
 	}
 
 	return ret, nil
@@ -446,9 +447,11 @@ func (p *pgxRepo) Search(ctx context.Context, query string, limit int, offset in
 			groupings = append(groupings, pp(&row))
 		}
 
+		seqs, _ := row.Sequences.(map[string]any)
+
 		ret = append(ret, BookInGroup{
 			Groups: groupings,
-			Book:   row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx),
+			Book:   row.Base.intoCommon(row.AuthorIds, row.Genres, seqs, p.l, ctx),
 		})
 	}
 
