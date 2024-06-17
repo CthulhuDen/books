@@ -116,7 +116,9 @@ func (p *pgxRepo) GetById(ctx context.Context, id string) (*types.Book, error) {
 		return nil, err
 	}
 
-	return row.Base.intoCommon(row.AuthorIds, row.Genres, row.Sequences.(map[string]any), p.l, ctx), nil
+	seqs, _ := row.Sequences.(map[string]any)
+
+	return row.Base.intoCommon(row.AuthorIds, row.Genres, seqs, p.l, ctx), nil
 }
 
 func (p *pgxRepo) GetByIds(ctx context.Context, ids ...string) (map[string]*types.Book, error) {
