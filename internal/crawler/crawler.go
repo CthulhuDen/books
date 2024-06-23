@@ -1,7 +1,9 @@
 package crawler
 
 import (
+	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/opds-community/libopds2-go/opds1"
@@ -83,36 +86,12 @@ type flibustaAuthors struct {
 func (f *flibustaAuthors) crawl() error {
 	f.logger.Debug("Begin processing authors feed " + f.feed.Path)
 
-	res, err := f.client.Do(&http.Request{
-		Method: http.MethodGet,
-		URL:    f.feed,
-	})
-
-	if err != nil {
-		f.logger.Error("Failed to fetch authors feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching authors feed: %w", err)
-	}
-
-	var bs []byte
-	func() {
-		defer res.Body.Close()
-		bs, err = io.ReadAll(res.Body)
-	}()
-
-	if err != nil {
-		f.logger.Error("Failed to read body of authors feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching authors feed (reading response): %w", err)
+	var feed opds1.Feed
+	if err := fetchAndUnmarshal(f.feed, &feed, "authors feed", f.client, f.logger); err != nil {
+		return err
 	}
 
 	l := f.logger.With(slog.String("feed", f.feed.Path))
-
-	var feed opds1.Feed
-	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
-
-	if err != nil {
-		f.logger.Error("Failed to unmarshal authors feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("unmarshalling authors feed: %w", err)
-	}
 
 	for _, entry := range feed.Entries {
 		entry.ID = strings.TrimSpace(entry.ID)
@@ -142,8 +121,10 @@ func (f *flibustaAuthors) crawl() error {
 			feedUrl := f.feed.ResolveReference(linkUrl)
 
 			err = f.withFeed(feedUrl).crawl()
-			if err != nil {
+			if er := new(consumerError); errors.As(err, &er) {
 				return err
+			} else if err != nil {
+				l.Error("Ignore error while parsing nested authors feed " + entry.ID + ": " + err.Error())
 			}
 		} else if regTagAuthor.MatchString(entry.ID) {
 			l.Debug("Found author description " + entry.ID)
@@ -177,8 +158,10 @@ func (f *flibustaAuthors) crawl() error {
 			}
 
 			err = f.author(f.feed.ResolveReference(linkUrl), author)
-			if err != nil {
+			if er := new(consumerError); errors.As(err, &er) {
 				return err
+			} else if err != nil {
+				l.Error("Ignore error while parsing nested author " + entry.ID + ": " + err.Error())
 			}
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
@@ -208,16 +191,13 @@ func (f *flibustaAuthors) author(authorUrl *url.URL, author *types.Author) error
 	l := f.logger.With(slog.String("author", author.Id))
 
 	if booksLink == nil {
-		l.Error("Failed to find link to books")
-		return fmt.Errorf("no link to author books")
+		l.Warn("Failed to find link to books")
+		return nil
 	}
 
 	err = f.consumer.ConsumeAuthor(author)
 	if err != nil {
-		_, ignore := err.(IgnoreError)
-		if !ignore {
-			return fmt.Errorf("failed to consume author: %w", err)
-		}
+		return &consumerError{fmt.Errorf("failed to consume author: %w", err)}
 	}
 
 	return (&flibustaBooks{
@@ -230,43 +210,19 @@ func (f *flibustaAuthors) author(authorUrl *url.URL, author *types.Author) error
 }
 
 func (f *flibustaAuthors) fillInfo(authorUrl *url.URL, author *types.Author) (*url.URL, error) {
-	res, err := f.client.Do(&http.Request{
-		Method: http.MethodGet,
-		URL:    authorUrl,
-	})
-
-	if err != nil {
-		f.logger.Error("Failed to fetch author description " + authorUrl.Path + ": " + err.Error())
-		return nil, fmt.Errorf("fetching author description: %w", err)
-	}
-
-	var bs []byte
-	func() {
-		defer res.Body.Close()
-		bs, err = io.ReadAll(res.Body)
-	}()
-
-	if err != nil {
-		f.logger.Error("Failed to read body of author description " + authorUrl.Path + ": " + err.Error())
-		return nil, fmt.Errorf("fetching author description (reading response): %w", err)
+	var feed opds1.Feed
+	if err := fetchAndUnmarshal(authorUrl, &feed, "author description", f.client, f.logger); err != nil {
+		return nil, err
 	}
 
 	l := f.logger.With(slog.String("author", author.Id))
-
-	var feed opds1.Feed
-	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
-
-	if err != nil {
-		f.logger.Error("Failed to unmarshal author description " + authorUrl.Path + ": " + err.Error())
-		return nil, fmt.Errorf("unmarshalling author description: %w", err)
-	}
 
 	if author.Name == "" {
 		feed.Title = strings.TrimSpace(feed.Title)
 
 		s := regTitleAuthorBooks.FindStringSubmatch(feed.Title)
 		if len(s) == 0 {
-			f.logger.Error("Failed to find author name from feed title " + authorUrl.Path + ": " + feed.Title)
+			f.logger.Warn("Failed to find author name from feed title " + authorUrl.Path + ": " + feed.Title)
 		} else {
 			author.Name = s[1]
 		}
@@ -356,36 +312,12 @@ type flibustaBooks struct {
 func (f *flibustaBooks) crawl() error {
 	f.logger.Debug("Begin processing books feed " + f.feed.Path)
 
-	res, err := f.client.Do(&http.Request{
-		Method: http.MethodGet,
-		URL:    f.feed,
-	})
-
-	if err != nil {
-		f.logger.Error("Failed to fetch books feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching books feed: %w", err)
-	}
-
-	var bs []byte
-	func() {
-		defer res.Body.Close()
-		bs, err = io.ReadAll(res.Body)
-	}()
-
-	if err != nil {
-		f.logger.Error("Failed to read body of books feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching books feed (reading response): %w", err)
+	var feed opds1.Feed
+	if err := fetchAndUnmarshal(f.feed, &feed, "books feed", f.client, f.logger); err != nil {
+		return err
 	}
 
 	l := f.logger.With(slog.String("feed", f.feed.Path))
-
-	var feed opds1.Feed
-	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
-
-	if err != nil {
-		f.logger.Error("Failed to unmarshal books feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("unmarshalling books feed: %w", err)
-	}
 
 	var bks []*types.Book
 	seenBooks := make(map[string]struct{}, len(feed.Entries))
@@ -410,7 +342,7 @@ func (f *flibustaBooks) crawl() error {
 				if err == nil {
 					year = uint16(y)
 				} else {
-					l.Error("Failed to parse book " + entry.ID + " year :" + err.Error())
+					l.Warn("Failed to parse book " + entry.ID + " year :" + err.Error())
 				}
 			}
 
@@ -496,7 +428,7 @@ func (f *flibustaBooks) crawl() error {
 	}
 
 	if len(bks) == 0 {
-		l.Error("No books parsed from feed")
+		l.Warn("No books parsed from feed")
 	} else {
 		err := f.consumer.ConsumeBooks(bks, func(id string) (*types.Author, error) {
 			if id == f.author.Id {
@@ -530,10 +462,7 @@ func (f *flibustaBooks) crawl() error {
 		})
 
 		if err != nil {
-			_, ignore := err.(IgnoreError)
-			if !ignore {
-				return fmt.Errorf("failed to consume books: %w", err)
-			}
+			return &consumerError{fmt.Errorf("failed to consume books: %w", err)}
 		}
 	}
 
@@ -584,36 +513,12 @@ type flibustaSeries struct {
 func (f *flibustaSeries) crawl() error {
 	f.logger.Debug("Begin processing series feed " + f.feed.Path)
 
-	res, err := f.client.Do(&http.Request{
-		Method: http.MethodGet,
-		URL:    f.feed,
-	})
-
-	if err != nil {
-		f.logger.Error("Failed to fetch series feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching series feed: %w", err)
-	}
-
-	var bs []byte
-	func() {
-		defer res.Body.Close()
-		bs, err = io.ReadAll(res.Body)
-	}()
-
-	if err != nil {
-		f.logger.Error("Failed to read body of series feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("fetching series feed (reading response): %w", err)
+	var feed opds1.Feed
+	if err := fetchAndUnmarshal(f.feed, &feed, "series feed", f.client, f.logger); err != nil {
+		return err
 	}
 
 	l := f.logger.With(slog.String("feed", f.feed.Path))
-
-	var feed opds1.Feed
-	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
-
-	if err != nil {
-		f.logger.Error("Failed to unmarshal series feed " + f.feed.Path + ": " + err.Error())
-		return fmt.Errorf("unmarshalling series feed: %w", err)
-	}
 
 	for _, entry := range feed.Entries {
 		entry.ID = strings.TrimSpace(entry.ID)
@@ -643,8 +548,10 @@ func (f *flibustaSeries) crawl() error {
 			feedUrl := f.feed.ResolveReference(linkUrl)
 
 			err = f.withFeed(feedUrl).crawl()
-			if err != nil {
+			if er := new(consumerError); errors.As(err, &er) {
 				return err
+			} else if err != nil {
+				l.Error("Ignore error while parsing nested feed " + entry.ID + ": " + err.Error())
 			}
 		} else if regTagSequence.MatchString(entry.ID) {
 			l.Debug("Found series description " + entry.ID)
@@ -678,8 +585,10 @@ func (f *flibustaSeries) crawl() error {
 			}
 
 			err = f.sequence(f.feed.ResolveReference(linkUrl), series)
-			if err != nil {
+			if er := new(consumerError); errors.As(err, &er) {
 				return err
+			} else if err != nil {
+				l.Error("Ignore error while parsing sequence " + entry.ID + ": " + err.Error())
 			}
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
@@ -701,36 +610,12 @@ func (f *flibustaSeries) withFeed(feed *url.URL) *flibustaSeries {
 func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) error {
 	f.logger.Debug("Begin processing series " + series.Id + " (" + series.Title + ", " + seriesUrl.Path + ")")
 
-	res, err := f.client.Do(&http.Request{
-		Method: http.MethodGet,
-		URL:    seriesUrl,
-	})
-
-	if err != nil {
-		f.logger.Error("Failed to fetch series description " + seriesUrl.Path + ": " + err.Error())
-		return fmt.Errorf("fetching series description: %w", err)
-	}
-
-	var bs []byte
-	func() {
-		defer res.Body.Close()
-		bs, err = io.ReadAll(res.Body)
-	}()
-
-	if err != nil {
-		f.logger.Error("Failed to read body of series description " + seriesUrl.Path + ": " + err.Error())
-		return fmt.Errorf("fetching series description (reading response): %w", err)
+	var feed opds1.Feed
+	if err := fetchAndUnmarshal(seriesUrl, &feed, "series description", f.client, f.logger); err != nil {
+		return err
 	}
 
 	l := f.logger.With(slog.String("series", series.Id))
-
-	var feed opds1.Feed
-	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l), &feed)
-
-	if err != nil {
-		f.logger.Error("Failed to unmarshal series description " + seriesUrl.Path + ": " + err.Error())
-		return fmt.Errorf("unmarshalling series description: %w", err)
-	}
 
 	var bookIds []string
 	seenBookIds := make(map[string]struct{}, len(feed.Entries))
@@ -753,19 +638,33 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 	}
 
 	if len(bookIds) == 0 {
-		l.Error("Empty series " + series.Id + " (" + series.Title + ")")
+		l.Warn("Empty series " + series.Id + " (" + series.Title + ")")
 		return nil
 	}
 
-	err = f.consumer.ConsumeSeries(series, bookIds)
+	err := f.consumer.ConsumeSeries(series, bookIds)
 	if err != nil {
-		_, ignore := err.(IgnoreError)
-		if !ignore {
-			return fmt.Errorf("failed to consume series: %w", err)
-		}
+		return &consumerError{fmt.Errorf("failed to consume series: %w", err)}
 	}
 
 	return nil
+}
+
+type consumerError struct {
+	error
+}
+
+func (e *consumerError) Error() string {
+	return e.error.Error()
+}
+
+func (e *consumerError) Format(f fmt.State, verb rune) {
+	if er, ok := e.error.(fmt.Formatter); ok {
+		er.Format(f, verb)
+		return
+	}
+
+	_, _ = fmt.Fprintf(f, fmt.FormatString(f, verb), e.error)
 }
 
 type clLogger struct {
@@ -811,7 +710,7 @@ func removeDisallowedCodepoints(bs []byte, l *slog.Logger) []byte {
 	for len(buf) > 0 {
 		r, size := utf8.DecodeRune(buf)
 		if r == utf8.RuneError && size == 1 {
-			l.Warn("Going to fail XML parsing because the bytes do not represent valid UTF8")
+			l.Error("Going to fail XML parsing because the bytes do not represent valid UTF8")
 			// invalid UTF-8, hope it doesn't come to this
 			return bs
 		}
@@ -840,4 +739,39 @@ func isInCharacterRange(r rune) (inrange bool) {
 		r >= 0x20 && r <= 0xD7FF ||
 		r >= 0xE000 && r <= 0xFFFD ||
 		r >= 0x10000 && r <= 0x10FFFF
+}
+
+func fetchAndUnmarshal(url *url.URL, v any, resourceType string, h *http.Client, l *slog.Logger) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res, err := h.Do((&http.Request{
+		Method: http.MethodGet,
+		URL:    url,
+	}).WithContext(ctx))
+
+	if err != nil {
+		l.Error("Failed to fetch " + resourceType + " " + url.Path + ": " + err.Error())
+		return fmt.Errorf("fetching "+resourceType+": %w", err)
+	}
+
+	var bs []byte
+	func() {
+		defer res.Body.Close()
+		bs, err = io.ReadAll(res.Body)
+	}()
+
+	if err != nil {
+		l.Error("Failed to read body of " + resourceType + " " + url.Path + ": " + err.Error())
+		return fmt.Errorf("fetching "+resourceType+" (reading response): %w", err)
+	}
+
+	err = xml.Unmarshal(removeDisallowedCodepoints(bs, l.With(slog.String("feed", url.Path))), v)
+
+	if err != nil {
+		l.Error("Failed to unmarshal " + resourceType + " " + url.Path + ": " + err.Error())
+		return fmt.Errorf("unmarshalling "+resourceType+": %w", err)
+	}
+
+	return nil
 }

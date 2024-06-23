@@ -13,10 +13,6 @@ import (
 	"books/internal/types"
 )
 
-type IgnoreError interface {
-	IgnoreError()
-}
-
 type Consumer interface {
 	ConsumeAuthor(author *types.Author) error
 	ConsumeBooks(books []*types.Book, fetchAuthor func(id string) (*types.Author, error)) error
