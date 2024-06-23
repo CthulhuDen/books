@@ -213,7 +213,8 @@ func (s *StoringConsumer) ConsumeSeries(series *types.Series, bookIds []string) 
 
 	for _, bookId := range bookIds {
 		if _, ok := bs[bookId]; !ok {
-			s.Logger.Warn("Couldn't consume series because one of the book was not found in store: " + bookId)
+			s.Logger.Warn("Couldn't consume series because one of the book was not found in store: "+bookId,
+				slog.String("series", series.Id))
 			return nil
 		}
 	}
