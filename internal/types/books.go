@@ -18,13 +18,15 @@ type InSeries struct {
 }
 
 type Book struct {
-	Id       string     `json:"id"`
-	Title    string     `json:"title"`
-	Authors  []string   `json:"author_ids"`
-	Series   []InSeries `json:"series"`
-	Genres   []string   `json:"genres"`
-	Language string     `json:"language"`
-	Year     uint16     `json:"year"`
-	About    string     `json:"about"`
-	Cover    string     `json:"cover_url"`
+	Id    string `json:"id"`
+	Title string `json:"title"`
+	// Must be unique and sorted by (unspecified priority in the source)
+	Authors []string   `json:"author_ids"`
+	Series  []InSeries `json:"series"`
+	// Must be unique and sorted by alphabet
+	Genres   []string `json:"genres"`
+	Language string   `json:"language"`
+	Year     uint16   `json:"year"`
+	About    string   `json:"about"`
+	Cover    string   `json:"cover_url"`
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"books/internal/storage/authors"
@@ -13,10 +14,12 @@ import (
 	"books/internal/types"
 )
 
+type FetchAuthor = func(id string) (*types.Author, error)
+
 type Consumer interface {
 	ConsumeAuthor(author *types.Author) error
-	ConsumeBooks(books []*types.Book, fetchAuthor func(id string) (*types.Author, error)) error
-	ConsumeSeries(series *types.Series, bookIds []string) error
+	ConsumeBooks(books []*types.Book, fetchAuthor FetchAuthor) error
+	ConsumeSeries(series *types.Series, bks []*types.Book, fetchAuthor FetchAuthor) error
 }
 
 type LoggerConsumer struct {
@@ -71,7 +74,7 @@ func (c *LoggerConsumer) ConsumeBooks(books []*types.Book, fetchAuthor func(id s
 	return nil
 }
 
-func (c *LoggerConsumer) ConsumeSeries(series *types.Series, bookIds []string) error {
+func (c *LoggerConsumer) ConsumeSeries(series *types.Series, bks []*types.Book, fetchAuthor FetchAuthor) error {
 	sb := strings.Builder{}
 	sb.WriteString("Consumed series ")
 	sb.WriteString(series.Id)
@@ -79,12 +82,23 @@ func (c *LoggerConsumer) ConsumeSeries(series *types.Series, bookIds []string) e
 	sb.WriteString(series.Title)
 	sb.WriteString(") with books ")
 
-	for ix, id := range bookIds {
+	for ix, book := range bks {
 		if ix != 0 {
 			sb.WriteString(", ")
 		}
 
-		sb.WriteString(id)
+		sb.WriteString(book.Id)
+		sb.WriteString(" (")
+		sb.WriteString(book.Title)
+		sb.WriteString(")")
+
+		for _, authId := range book.Authors {
+			// Just make sure there are no errors
+			_, err := fetchAuthor(authId)
+			if err != nil {
+				return fmt.Errorf("checking crawler fetchAuthor: %w", err)
+			}
+		}
 	}
 
 	c.Logger.Info(sb.String())
@@ -101,6 +115,20 @@ type StoringConsumer struct {
 }
 
 func (s *StoringConsumer) ConsumeAuthor(author *types.Author) error {
+	a, err := s.Authors.GetById(context.Background(), author.Id)
+	if err != nil {
+		return fmt.Errorf("checking existing author: %w", err)
+	}
+
+	if a == nil {
+		s.Logger.Info("Storing new author " + author.Id + " (" + author.Name + ")")
+	} else if *a != *author {
+		s.Logger.Info("Updating existing author " + author.Id + " (" + author.Name + ")")
+	} else {
+		s.Logger.Debug("Skip unchanged author " + author.Id + " (" + author.Name + ")")
+		return nil
+	}
+
 	return s.Authors.Save(context.Background(), author)
 }
 
@@ -170,12 +198,37 @@ func (s *StoringConsumer) ConsumeBooks(books []*types.Book, fetchAuthor func(id 
 		gs[genreTitle] = genreId
 	}
 
-	err = s.Books.Save(context.Background(), books...)
+	bookIds := make([]string, 0, len(books))
+	for _, book := range books {
+		bookIds = append(bookIds, book.Id)
+	}
+
+	existBooks, err := s.Books.GetByIds(context.Background(), bookIds...)
+	if err != nil {
+		return fmt.Errorf("checking existing books: %w", err)
+	}
+
+	saveBooks := make([]*types.Book, 0, len(books))
+	for _, book := range books {
+		exBook, ok := existBooks[book.Id]
+		if !ok {
+			s.Logger.Info("Storing new book " + book.Id + " (" + book.Title + ")")
+		} else if bookNeedsUpdate(exBook, book) {
+			s.Logger.Info("Updating existing book " + book.Id + " (" + book.Title + ")")
+		} else {
+			s.Logger.Debug("Skip unchanged book " + book.Id + " (" + book.Title + ")")
+			continue
+		}
+
+		saveBooks = append(saveBooks, book)
+	}
+
+	err = s.Books.Save(context.Background(), saveBooks...)
 	if err != nil {
 		return fmt.Errorf("saving books: %w", err)
 	}
 
-	for _, book := range books {
+	for _, book := range saveBooks {
 		err := s.Books.LinkBookAndAuthors(context.Background(), book.Id, book.Authors...)
 		if err != nil {
 			return fmt.Errorf("linking book and authors: %w", err)
@@ -200,24 +253,34 @@ func (s *StoringConsumer) ConsumeBooks(books []*types.Book, fetchAuthor func(id 
 	return nil
 }
 
-func (s *StoringConsumer) ConsumeSeries(series *types.Series, bookIds []string) error {
-	err := s.Series.Save(context.Background(), series)
+func (s *StoringConsumer) ConsumeSeries(series *types.Series, bks []*types.Book, fetchAuthor FetchAuthor) error {
+	ex, err := s.Series.GetById(context.Background(), series.Id)
+	if err != nil {
+		return fmt.Errorf("checking existing series: %w", err)
+	}
+
+	if ex == nil {
+		s.Logger.Info("Storing new series " + series.Id + " (" + series.Title + ")")
+		err = s.Series.Save(context.Background(), series)
+	} else if *ex != *series {
+		s.Logger.Info("Updating existing series " + series.Id + " (" + series.Title + ")")
+		err = s.Series.Save(context.Background(), series)
+	}
 	if err != nil {
 		return fmt.Errorf("saving series: %w", err)
 	}
 
-	bs, err := s.Books.GetByIds(context.Background(), bookIds...)
+	err = s.ConsumeBooks(bks, fetchAuthor)
 	if err != nil {
-		return fmt.Errorf("finding existing books: %w", err)
+		return err
 	}
 
-	for _, bookId := range bookIds {
-		if _, ok := bs[bookId]; !ok {
-			s.Logger.Warn("Couldn't consume series because one of the book was not found in store: "+bookId,
-				slog.String("series", series.Id))
-			return nil
-		}
+	bookIds := make([]string, 0, len(bks))
+	for _, b := range bks {
+		bookIds = append(bookIds, b.Id)
 	}
+
+	s.Logger.Debug("Link books with series " + series.Id + " (" + series.Title + ")")
 
 	err = s.Books.LinkSeriesWithBooks(context.Background(), series.Id, bookIds...)
 	if err != nil {
@@ -225,4 +288,14 @@ func (s *StoringConsumer) ConsumeSeries(series *types.Series, bookIds []string) 
 	}
 
 	return nil
+}
+
+func bookNeedsUpdate(book *types.Book, new *types.Book) bool {
+	return book.Title != new.Title ||
+		!slices.Equal(book.Authors, new.Authors) ||
+		!slices.Equal(book.Genres, new.Genres) ||
+		book.Language != new.Language ||
+		book.Year != new.Year ||
+		book.About != new.About ||
+		book.Cover != new.Cover
 }

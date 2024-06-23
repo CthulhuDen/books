@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -335,93 +336,7 @@ func (f *flibustaBooks) crawl() error {
 
 			seenBooks[entry.ID] = struct{}{}
 
-			var year uint16
-			entry.Issued = strings.TrimSpace(entry.Issued)
-			if entry.Issued != "" {
-				y, err := strconv.ParseUint(entry.Issued, 10, 16)
-				if err == nil {
-					year = uint16(y)
-				} else {
-					l.Warn("Failed to parse book " + entry.ID + " year :" + err.Error())
-				}
-			}
-
-			var genres []string
-			seenGenres := make(map[string]struct{}, len(entry.Category))
-			for _, cat := range entry.Category {
-				cat.Term = strings.TrimSpace(cat.Term)
-
-				if _, ok := seenGenres[strings.ToLower(cat.Term)]; ok {
-					l.Warn("In the same book found duplicate of genre " + cat.Term)
-					continue
-				}
-
-				seenGenres[strings.ToLower(cat.Term)] = struct{}{}
-
-				genres = append(genres, cat.Term)
-			}
-
-			var authors []string
-			seenAuthors := make(map[string]struct{}, len(entry.Author))
-			for _, auth := range entry.Author {
-				s := regHrefAuthorAlt.FindStringSubmatch(auth.URI)
-				if len(s) == 0 {
-					l.Error("Failed to parse author " + entry.ID + " from URI: " + auth.URI)
-					continue
-				}
-
-				authorId := fmt.Sprintf(authorIdTemplate, s[1])
-
-				if _, ok := seenAuthors[authorId]; ok {
-					l.Warn("In the same book found duplicate of author " + authorId)
-					continue
-				}
-
-				seenAuthors[authorId] = struct{}{}
-
-				authors = append(authors, authorId)
-			}
-
-			coverLink := chooseLink(&entry, func(link *opds1.Link) string {
-				if link.Rel != linkRelImage {
-					return "unknown rel: " + link.Rel
-				}
-
-				if !regLinkTypeImage.MatchString(link.TypeLink) {
-					return "unknown type: " + link.TypeLink
-				}
-
-				return ""
-			}, clLogger{logger: l.With(slog.String("entry", entry.ID))})
-
-			var cover *url.URL
-
-			if coverLink == nil {
-				l.Info("Not found book cover link " + entry.ID)
-			} else {
-				coverUrl, err := url.Parse(coverLink.Href)
-				if err == nil {
-					cover = f.feed.ResolveReference(coverUrl)
-				} else {
-					l.Error("Failed to parse cover link " + entry.ID + ": " + err.Error())
-				}
-			}
-
-			cs := ""
-			if cover != nil {
-				cs = cover.String()
-			}
-
-			bks = append(bks, &types.Book{
-				Id:       entry.ID,
-				Title:    strings.TrimSpace(entry.Title),
-				Authors:  authors,
-				Genres:   genres,
-				Language: strings.TrimSpace(entry.Language),
-				Year:     year,
-				About:    entry.Content.Content,
-				Cover:    cs,
-			})
+			bks = append(bks, parseBook(&entry, f.feed, l))
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
 		}
@@ -430,37 +345,13 @@ func (f *flibustaBooks) crawl() error {
 	if len(bks) == 0 {
 		l.Warn("No books parsed from feed")
 	} else {
-		err := f.consumer.ConsumeBooks(bks, func(id string) (*types.Author, error) {
-			if id == f.author.Id {
-				return f.author, nil
-			}
-
-			s := regTagAuthor.FindStringSubmatch(id)
-			if len(s) == 0 {
-				l.Error("Failed to parse author from id " + id)
-				return nil, fmt.Errorf("could not parse author id in %s", id)
-			}
-
-			authorUrl, _ := url.Parse(fmt.Sprintf(authorHrefTemplate, s[1]))
-
-			author := &types.Author{Id: id}
-
-			l.Debug("Begin fetching author " + author.Id + " (" + authorUrl.Path + ") by consumer request")
-
-			_, err := (&flibustaAuthors{
-				client:   f.client,
-				logger:   l,
-				feed:     f.feed.ResolveReference(authorUrl),
-				consumer: nil,
-			}).fillInfo(f.feed.ResolveReference(authorUrl), author)
-
-			if err != nil {
-				return nil, fmt.Errorf("fetching author: %w", err)
-			}
-
-			return author, nil
-		})
-
+		ar := authorResolver{
+			author: f.author,
+			l:      l,
+			client: f.client,
+			feed:   f.feed,
+		}
+		err := f.consumer.ConsumeBooks(bks, ar.resolve)
 		if err != nil {
 			return &consumerError{fmt.Errorf("failed to consume books: %w", err)}
 		}
@@ -617,7 +508,7 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 
 	l := f.logger.With(slog.String("series", series.Id))
 
-	var bookIds []string
+	var bks []*types.Book
 	seenBookIds := make(map[string]struct{}, len(feed.Entries))
 
 	for _, entry := range feed.Entries {
@@ -631,18 +522,24 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 
 			seenBookIds[entry.ID] = struct{}{}
 
-			bookIds = append(bookIds, entry.ID)
+			bks = append(bks, parseBook(&entry, seriesUrl, l))
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
 		}
 	}
 
-	if len(bookIds) == 0 {
+	if len(bks) == 0 {
 		l.Warn("Empty series " + series.Id + " (" + series.Title + ")")
 		return nil
 	}
 
-	err := f.consumer.ConsumeSeries(series, bookIds)
+	ar := authorResolver{
+		l:      l,
+		client: f.client,
+		feed:   seriesUrl,
+	}
+
+	err := f.consumer.ConsumeSeries(series, bks, ar.resolve)
 	if err != nil {
 		return &consumerError{fmt.Errorf("failed to consume series: %w", err)}
 	}
@@ -699,6 +596,135 @@ func chooseLink(e *opds1.Entry, matcher func(link *opds1.Link) string, l clLogge
 	}
 
 	return ret
+}
+
+type authorResolver struct {
+	author *types.Author
+	l      *slog.Logger
+	client *http.Client
+	feed   *url.URL
+}
+
+func (ar *authorResolver) resolve(id string) (*types.Author, error) {
+	if ar.author != nil && id == ar.author.Id {
+		return ar.author, nil
+	}
+
+	s := regTagAuthor.FindStringSubmatch(id)
+	if len(s) == 0 {
+		ar.l.Error("Failed to parse author from id " + id)
+		return nil, fmt.Errorf("could not parse author id in %s", id)
+	}
+
+	authorUrl, _ := url.Parse(fmt.Sprintf(authorHrefTemplate, s[1]))
+
+	author := &types.Author{Id: id}
+
+	ar.l.Debug("Begin fetching author " + author.Id + " (" + authorUrl.Path + ") by consumer request")
+
+	_, err := (&flibustaAuthors{
+		client:   ar.client,
+		logger:   ar.l,
+		feed:     ar.feed.ResolveReference(authorUrl),
+		consumer: nil,
+	}).fillInfo(ar.feed.ResolveReference(authorUrl), author)
+
+	if err != nil {
+		return nil, fmt.Errorf("fetching author: %w", err)
+	}
+
+	return author, nil
+}
+
+func parseBook(entry *opds1.Entry, feedUrl *url.URL, l *slog.Logger) *types.Book {
+	var year uint16
+	entry.Issued = strings.TrimSpace(entry.Issued)
+	if entry.Issued != "" {
+		y, err := strconv.ParseUint(entry.Issued, 10, 16)
+		if err == nil {
+			year = uint16(y)
+		} else {
+			l.Warn("Failed to parse book " + entry.ID + " year :" + err.Error())
+		}
+	}
+
+	genres := make([]string, 0, len(entry.Category))
+	seenGenres := make(map[string]struct{}, len(entry.Category))
+	for _, cat := range entry.Category {
+		cat.Term = strings.TrimSpace(cat.Term)
+
+		if _, ok := seenGenres[strings.ToLower(cat.Term)]; ok {
+			l.Warn("In the same book found duplicate of genre " + cat.Term)
+			continue
+		}
+
+		seenGenres[strings.ToLower(cat.Term)] = struct{}{}
+
+		genres = append(genres, cat.Term)
+	}
+	sort.Strings(genres)
+
+	authors := make([]string, 0, len(entry.Author))
+	seenAuthors := make(map[string]struct{}, len(entry.Author))
+	for _, auth := range entry.Author {
+		s := regHrefAuthorAlt.FindStringSubmatch(auth.URI)
+		if len(s) == 0 {
+			l.Error("Failed to parse author " + entry.ID + " from URI: " + auth.URI)
+			continue
+		}
+
+		authorId := fmt.Sprintf(authorIdTemplate, s[1])
+
+		if _, ok := seenAuthors[authorId]; ok {
+			l.Warn("In the same book found duplicate of author " + authorId)
+			continue
+		}
+
+		seenAuthors[authorId] = struct{}{}
+
+		authors = append(authors, authorId)
+	}
+
+	coverLink := chooseLink(entry, func(link *opds1.Link) string {
+		if link.Rel != linkRelImage {
+			return "unknown rel: " + link.Rel
+		}
+
+		if !regLinkTypeImage.MatchString(link.TypeLink) {
+			return "unknown type: " + link.TypeLink
+		}
+
+		return ""
+	}, clLogger{logger: l.With(slog.String("entry", entry.ID))})
+
+	var cover *url.URL
+
+	if coverLink == nil {
+		l.Info("Not found book cover link " + entry.ID)
+	} else {
+		coverUrl, err := url.Parse(coverLink.Href)
+		if err == nil {
+			cover = feedUrl.ResolveReference(coverUrl)
+		} else {
+			l.Error("Failed to parse cover link " + entry.ID + ": " + err.Error())
+		}
+	}
+
+	cs := ""
+	if cover != nil {
+		cs = cover.String()
+	}
+
+	return &types.Book{
+		Id:       entry.ID,
+		Title:    strings.TrimSpace(entry.Title),
+		Authors:  authors,
+		Genres:   genres,
+		Language: strings.TrimSpace(entry.Language),
+		Year:     year,
+		About:    entry.Content.Content,
+		Cover:    cs,
+	}
 }
 
 // Inspect each rune for being a disallowed character.
