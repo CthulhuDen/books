@@ -169,6 +169,14 @@ func (f *flibustaAuthors) crawl() error {
 		}
 	}
 
+	urlNextPage, err := getNext(&feed, l)
+	if err != nil {
+		return err
+	}
+	if urlNextPage != nil {
+		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
+	}
+
 	return nil
 }
 
@@ -357,31 +365,15 @@ func (f *flibustaBooks) crawl() error {
 		}
 	}
 
-	linkNxtPage := chooseLink(&opds1.Entry{Links: feed.Links}, func(link *opds1.Link) string {
-		if link.Rel != linkRelNext {
-			return "unknown rel " + link.Rel
-		}
-
-		if link.TypeLink != linkTypeCatalog {
-			return "unknown type: " + link.TypeLink
-		}
-
-		return ""
-	}, clLogger{logger: l})
-
-	if linkNxtPage == nil {
-		return nil
-	}
-
-	l.Debug("Found link to the next page")
-
-	urlNextPage, err := url.Parse(linkNxtPage.Href)
+	urlNextPage, err := getNext(&feed, l)
 	if err != nil {
-		l.Error("Failed to parse next page link " + linkNxtPage.Href + ": " + err.Error())
-		return nil
+		return err
+	}
+	if urlNextPage != nil {
+		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
 	}
 
-	return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
+	return nil
 }
 
 func (f *flibustaBooks) withFeed(feed *url.URL) *flibustaBooks {
@@ -484,6 +476,14 @@ func (f *flibustaSeries) crawl() error {
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
 		}
+	}
+
+	urlNextPage, err := getNext(&feed, l)
+	if err != nil {
+		return err
+	}
+	if urlNextPage != nil {
+		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
 	}
 
 	return nil
@@ -634,6 +634,34 @@ func (ar *authorResolver) resolve(id string) (*types.Author, error) {
 	}
 
 	return author, nil
+}
+
+func getNext(feed *opds1.Feed, l *slog.Logger) (*url.URL, error) {
+	linkNxtPage := chooseLink(&opds1.Entry{Links: feed.Links}, func(link *opds1.Link) string {
+		if link.Rel != linkRelNext {
+			return "unknown rel " + link.Rel
+		}
+
+		if link.TypeLink != linkTypeCatalog {
+			return "unknown type: " + link.TypeLink
+		}
+
+		return ""
+	}, clLogger{logger: l})
+
+	if linkNxtPage == nil {
+		return nil, nil
+	}
+
+	l.Debug("Found link to the next page")
+
+	urlNextPage, err := url.Parse(linkNxtPage.Href)
+	if err != nil {
+		l.Error("Failed to parse next page link " + linkNxtPage.Href + ": " + err.Error())
+		return nil, fmt.Errorf("parsing next page link: %w", err)
+	}
+
+	return urlNextPage, nil
 }
 
 func parseBook(entry *opds1.Entry, feedUrl *url.URL, l *slog.Logger) *types.Book {
