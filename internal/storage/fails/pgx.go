@@ -2,6 +2,9 @@ package fails
 
 import (
 	"context"
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/url"
 	"time"
@@ -28,6 +31,15 @@ type pgxFeed struct {
 	Type   uint8         `json:"type"`
 	Author *types.Author `json:"author,omitempty"`
 	Series *types.Series `json:"series,omitempty"`
+}
+
+func (p pgxFeed) Value() (driver.Value, error) {
+	bs, err := json.Marshal(&p)
+	if err != nil {
+		return nil, fmt.Errorf("serializing feed value: %w", err)
+	}
+
+	return string(bs), nil
 }
 
 type pgxRecord struct {
@@ -60,9 +72,12 @@ func (p *pgxRepo) Save(ctx context.Context, startTime *time.Time, feed types.Res
 	return err
 }
 
-func (p *pgxRepo) GetFails(ctx context.Context, notAfter *time.Time) ([]*Record, error) {
+func (p *pgxRepo) GetFails(ctx context.Context, notAfter *time.Time, limit uint) ([]*Record, error) {
 	sql, params, err := p.g.From("fail").
 		Where(goqu.C("start_time").Lte(notAfter)).
+		Order(goqu.C("start_time").Asc()).
+		Order(goqu.C("id").Asc()).
+		Limit(limit).
 		ToSQL()
 	if err != nil {
 		return nil, err

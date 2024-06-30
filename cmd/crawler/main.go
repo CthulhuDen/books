@@ -110,7 +110,7 @@ func main() {
 	}
 
 	if len(os.Args) > 1 && strings.ToLower(os.Args[1]) == "resume" {
-		t := n.Add(-time.Second)
+		t := n.Add(-time.Hour)
 		if len(os.Args) > 2 {
 			t, err = time.Parse(time.DateTime, os.Args[2])
 			if err != nil {
@@ -136,22 +136,27 @@ func main() {
 }
 
 func resume(startTime *time.Time, cr crawler.Crawler, fr fails.Repository, c crawler.Consumer, h crawler.ErrorHandler) error {
-	fs, err := fr.GetFails(context.Background(), startTime)
-	if err != nil {
-		return fmt.Errorf("fetching list of fails: %w", err)
-	}
+	for {
+		fs, err := fr.GetFails(context.Background(), startTime, 100)
 
-	for _, f := range fs {
-		err := cr.Resume(f.Feed, c, h)
 		if err != nil {
-			return fmt.Errorf("while resuming %s: %w", f.Feed.Url, err)
+			return fmt.Errorf("fetching list of fails: %w", err)
 		}
 
-		err = fr.DeleteById(context.Background(), f.Id)
-		if err != nil {
-			return fmt.Errorf("while deleting %s (#%v): %w", f.Feed.Url, f.Id, err)
+		if len(fs) == 0 {
+			return nil
+		}
+
+		for _, f := range fs {
+			err := cr.Resume(f.Feed, c, h)
+			if err != nil {
+				return fmt.Errorf("while resuming %s: %w", f.Feed.Url, err)
+			}
+
+			err = fr.DeleteById(context.Background(), f.Id)
+			if err != nil {
+				return fmt.Errorf("while deleting %s (#%v): %w", f.Feed.Url, f.Id, err)
+			}
 		}
 	}
-
-	return nil
 }

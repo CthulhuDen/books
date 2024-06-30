@@ -76,7 +76,7 @@ func consumeError(err error, feed types.ResumableFeed, handler ErrorHandler, l *
 
 		hErr := handler.Handle(feed, err)
 		if hErr != nil {
-			l.Error(fmt.Sprintf("Failed to handler error while parsing %s %s: %v", strTyp, feed.Url, err))
+			l.Error(fmt.Sprintf("Failed to handle error while parsing %s %s: %v", strTyp, feed.Url, err))
 			return &handlerError{hErr}
 		} else {
 			l.Error(fmt.Sprintf("Ignore error while parsing %s %s: %v", strTyp, feed.Url, err))

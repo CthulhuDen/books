@@ -3,8 +3,8 @@ package types
 type Author struct {
 	Id     string `json:"id"`
 	Name   string `json:"name"`
-	Bio    string `json:"bio"`
-	Avatar string `json:"avatar_url"`
+	Bio    string `json:"bio,omitempty"`
+	Avatar string `json:"avatar_url,omitempty"`
 }
 
 type Series struct {
@@ -27,6 +27,6 @@ type Book struct {
 	Genres   []string `json:"genres"`
 	Language string   `json:"language"`
 	Year     uint16   `json:"year"`
-	About    string   `json:"about"`
-	Cover    string   `json:"cover_url"`
+	About    string   `json:"about,omitempty"`
+	Cover    string   `json:"cover_url,omitempty"`
 }
