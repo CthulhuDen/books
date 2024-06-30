@@ -17,6 +17,6 @@ type Record struct {
 type Repository interface {
 	Save(ctx context.Context, startTime *time.Time, feed types.ResumableFeed, err error) error
 
-	GetFails(ctx context.Context, startTime *time.Time) ([]*Record, error)
+	GetFails(ctx context.Context, notAfter *time.Time) ([]*Record, error)
 	DeleteById(ctx context.Context, id uint64) error
 }

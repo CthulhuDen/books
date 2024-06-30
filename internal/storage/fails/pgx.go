@@ -60,9 +60,9 @@ func (p *pgxRepo) Save(ctx context.Context, startTime *time.Time, feed types.Res
 	return err
 }
 
-func (p *pgxRepo) GetFails(ctx context.Context, startTime *time.Time) ([]*Record, error) {
+func (p *pgxRepo) GetFails(ctx context.Context, notAfter *time.Time) ([]*Record, error) {
 	sql, params, err := p.g.From("fail").
-		Where(goqu.C("start_time").Gte(startTime)).
+		Where(goqu.C("start_time").Lte(notAfter)).
 		ToSQL()
 	if err != nil {
 		return nil, err

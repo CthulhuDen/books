@@ -101,14 +101,25 @@ func main() {
 		Series:  series.NewPGXRepository(pg, slog.Default()),
 	}
 
+	fr := fails.NewPGXRepository(pg, slog.Default())
+	n := time.Now()
+	h := crawler.StoringHandler{
+		StartTime: &n,
+		Logger:    slog.Default(),
+		Fails:     fr,
+	}
+
 	if len(os.Args) > 1 && strings.ToLower(os.Args[1]) == "resume" {
-		t, err := time.Parse(time.DateTime, os.Args[2])
-		if err != nil {
-			slog.Error("Invalid start time provided: " + err.Error())
-			os.Exit(1)
+		t := n.Add(-time.Second)
+		if len(os.Args) > 2 {
+			t, err = time.Parse(time.DateTime, os.Args[2])
+			if err != nil {
+				slog.Error("Invalid start time provided: " + err.Error())
+				os.Exit(1)
+			}
 		}
 
-		err = resume(&t, &cr, fails.NewPGXRepository(pg, slog.Default()), &c)
+		err = resume(&t, &cr, fr, &c, &h)
 		if err != nil {
 			slog.Error("Resume failed: " + err.Error())
 			os.Exit(1)
@@ -117,21 +128,21 @@ func main() {
 		os.Exit(0)
 	}
 
-	err = cr.Crawl(urlAuthors, urlSeries, &c, nil)
+	err = cr.Crawl(urlAuthors, urlSeries, &c, &h)
 	if err != nil {
 		slog.Error("Crawl failed: " + err.Error())
 		os.Exit(1)
 	}
 }
 
-func resume(startTime *time.Time, cr crawler.Crawler, fr fails.Repository, c crawler.Consumer) error {
+func resume(startTime *time.Time, cr crawler.Crawler, fr fails.Repository, c crawler.Consumer, h crawler.ErrorHandler) error {
 	fs, err := fr.GetFails(context.Background(), startTime)
 	if err != nil {
 		return fmt.Errorf("fetching list of fails: %w", err)
 	}
 
 	for _, f := range fs {
-		err := cr.Resume(f.Feed, c, nil)
+		err := cr.Resume(f.Feed, c, h)
 		if err != nil {
 			return fmt.Errorf("while resuming %s: %w", f.Feed.Url, err)
 		}
