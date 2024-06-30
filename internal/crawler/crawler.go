@@ -50,7 +50,40 @@ var (
 
 type Crawler interface {
 	// Crawl MAY call consumer concurrently
-	Crawl(authorsFeed *url.URL, consumer Consumer) error
+	Crawl(authorsFeed *url.URL, seriesFeed *url.URL, consumer Consumer, handler ErrorHandler) error
+	Resume(feed types.ResumableFeed, consumer Consumer, handler ErrorHandler) error
+}
+
+func consumeError(err error, feed types.ResumableFeed, handler ErrorHandler, l *slog.Logger) error {
+	if er := new(unresumableError); errors.As(err, er) {
+		return err
+	}
+
+	if err != nil {
+		strTyp := "unknown feed type"
+		switch feed.Type {
+		case types.FeedTypeAuthors:
+			strTyp = "authors feed"
+		case types.FeedTypeAuthor:
+			strTyp = "author"
+		case types.FeedTypeBooks:
+			strTyp = "books feed"
+		case types.FeedTypeSequences:
+			strTyp = "sequences feed"
+		case types.FeedTypeSeries:
+			strTyp = "series"
+		}
+
+		hErr := handler.Handle(feed, err)
+		if hErr != nil {
+			l.Error(fmt.Sprintf("Failed to handler error while parsing %s %s: %v", strTyp, feed.Url, err))
+			return &handlerError{hErr}
+		} else {
+			l.Error(fmt.Sprintf("Ignore error while parsing %s %s: %v", strTyp, feed.Url, err))
+		}
+	}
+
+	return nil
 }
 
 type Flibusta struct {
@@ -58,23 +91,100 @@ type Flibusta struct {
 	Logger *slog.Logger
 }
 
-func (f *Flibusta) Crawl(authorsFeed *url.URL, seriesFeed *url.URL, consumer Consumer) error {
-	err := (&flibustaAuthors{
-		client:   f.Client,
-		logger:   f.Logger,
-		feed:     authorsFeed,
-		consumer: consumer,
-	}).crawl()
+func (f *Flibusta) Resume(feed types.ResumableFeed, consumer Consumer, handler ErrorHandler) error {
+	var err error
+
+	switch feed.Type {
+	case types.FeedTypeAuthors:
+		f.Logger.Debug("Begin resuming authors feed " + feed.Url.Path)
+
+		err = (&flibustaAuthors{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     feed.Url,
+			consumer: consumer,
+			handler:  handler,
+		}).crawl()
+
+	case types.FeedTypeAuthor:
+		f.Logger.Debug("Begin resuming author " + feed.Url.Path)
+
+		err = (&flibustaAuthors{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     feed.Url,
+			consumer: consumer,
+			handler:  handler,
+		}).author(feed.Url, feed.Author)
+
+	case types.FeedTypeBooks:
+		f.Logger.Debug("Begin resuming books feed " + feed.Url.Path)
+
+		err = (&flibustaBooks{
+			client:   f.Client,
+			logger:   f.Logger,
+			author:   feed.Author,
+			feed:     feed.Url,
+			consumer: consumer,
+			handler:  handler,
+		}).crawl()
+
+	case types.FeedTypeSequences:
+		f.Logger.Debug("Begin resuming sequences feed " + feed.Url.Path)
+
+		err = (&flibustaSeries{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     feed.Url,
+			consumer: consumer,
+			handler:  handler,
+		}).crawl()
+
+	case types.FeedTypeSeries:
+		f.Logger.Debug("Begin resuming series " + feed.Url.Path)
+
+		err = (&flibustaSeries{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     feed.Url,
+			consumer: consumer,
+			handler:  handler,
+		}).sequence(feed.Url, feed.Series)
+
+	default:
+		return fmt.Errorf("unknown feed type: %v", feed.Type)
+	}
+
+	return consumeError(err, feed, handler, f.Logger)
+}
+
+func (f *Flibusta) Crawl(authorsFeed *url.URL, seriesFeed *url.URL, consumer Consumer, handler ErrorHandler) error {
+	err := consumeError(
+		(&flibustaAuthors{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     authorsFeed,
+			consumer: consumer,
+			handler:  handler,
+		}).crawl(),
+		types.MakeResumableAuthors(authorsFeed),
+		handler, f.Logger,
+	)
 	if err != nil {
 		return err
 	}
 
-	return (&flibustaSeries{
-		client:   f.Client,
-		logger:   f.Logger,
-		feed:     seriesFeed,
-		consumer: consumer,
-	}).crawl()
+	return consumeError(
+		(&flibustaSeries{
+			client:   f.Client,
+			logger:   f.Logger,
+			feed:     seriesFeed,
+			consumer: consumer,
+			handler:  handler,
+		}).crawl(),
+		types.MakeResumableSequences(seriesFeed),
+		handler, f.Logger,
+	)
 }
 
 type flibustaAuthors struct {
@@ -82,6 +192,7 @@ type flibustaAuthors struct {
 	logger   *slog.Logger
 	feed     *url.URL
 	consumer Consumer
+	handler  ErrorHandler
 }
 
 func (f *flibustaAuthors) crawl() error {
@@ -119,13 +230,15 @@ func (f *flibustaAuthors) crawl() error {
 				continue
 			}
 
-			feedUrl := f.feed.ResolveReference(linkUrl)
+			linkUrl = f.feed.ResolveReference(linkUrl)
 
-			err = f.withFeed(feedUrl).crawl()
-			if er := new(consumerError); errors.As(err, &er) {
+			err = consumeError(
+				f.withFeed(linkUrl).crawl(),
+				types.MakeResumableAuthors(linkUrl),
+				f.handler, l,
+			)
+			if err != nil {
 				return err
-			} else if err != nil {
-				l.Error("Ignore error while parsing nested authors feed " + entry.ID + ": " + err.Error())
 			}
 		} else if regTagAuthor.MatchString(entry.ID) {
 			l.Debug("Found author description " + entry.ID)
@@ -158,11 +271,15 @@ func (f *flibustaAuthors) crawl() error {
 				continue
 			}
 
-			err = f.author(f.feed.ResolveReference(linkUrl), author)
-			if er := new(consumerError); errors.As(err, &er) {
+			linkUrl = f.feed.ResolveReference(linkUrl)
+
+			err = consumeError(
+				f.author(linkUrl, author),
+				types.MakeResumableAuthor(linkUrl, author),
+				f.handler, l,
+			)
+			if err != nil {
 				return err
-			} else if err != nil {
-				l.Error("Ignore error while parsing nested author " + entry.ID + ": " + err.Error())
 			}
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
@@ -174,7 +291,12 @@ func (f *flibustaAuthors) crawl() error {
 		return err
 	}
 	if urlNextPage != nil {
-		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
+		urlNextPage = f.feed.ResolveReference(urlNextPage)
+		return consumeError(
+			f.withFeed(urlNextPage).crawl(),
+			types.MakeResumableAuthors(urlNextPage),
+			f.handler, l,
+		)
 	}
 
 	return nil
@@ -186,6 +308,7 @@ func (f *flibustaAuthors) withFeed(feed *url.URL) *flibustaAuthors {
 		logger:   f.logger,
 		feed:     feed,
 		consumer: f.consumer,
+		handler:  f.handler,
 	}
 }
 
@@ -209,13 +332,20 @@ func (f *flibustaAuthors) author(authorUrl *url.URL, author *types.Author) error
 		return &consumerError{fmt.Errorf("failed to consume author: %w", err)}
 	}
 
-	return (&flibustaBooks{
-		client:   f.client,
-		logger:   l,
-		author:   author,
-		feed:     authorUrl.ResolveReference(booksLink),
-		consumer: f.consumer,
-	}).crawl()
+	booksLink = authorUrl.ResolveReference(booksLink)
+
+	return consumeError(
+		(&flibustaBooks{
+			client:   f.client,
+			logger:   l,
+			author:   author,
+			feed:     booksLink,
+			consumer: f.consumer,
+			handler:  f.handler,
+		}).crawl(),
+		types.MakeResumableBooks(booksLink, author),
+		f.handler, l,
+	)
 }
 
 func (f *flibustaAuthors) fillInfo(authorUrl *url.URL, author *types.Author) (*url.URL, error) {
@@ -316,6 +446,7 @@ type flibustaBooks struct {
 	author   *types.Author
 	feed     *url.URL
 	consumer Consumer
+	handler  ErrorHandler
 }
 
 func (f *flibustaBooks) crawl() error {
@@ -370,7 +501,12 @@ func (f *flibustaBooks) crawl() error {
 		return err
 	}
 	if urlNextPage != nil {
-		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
+		urlNextPage = f.feed.ResolveReference(urlNextPage)
+		return consumeError(
+			f.withFeed(urlNextPage).crawl(),
+			types.MakeResumableBooks(urlNextPage, f.author),
+			f.handler, l,
+		)
 	}
 
 	return nil
@@ -383,6 +519,7 @@ func (f *flibustaBooks) withFeed(feed *url.URL) *flibustaBooks {
 		author:   f.author,
 		feed:     feed,
 		consumer: f.consumer,
+		handler:  f.handler,
 	}
 }
 
@@ -391,6 +528,7 @@ type flibustaSeries struct {
 	logger   *slog.Logger
 	feed     *url.URL
 	consumer Consumer
+	handler  ErrorHandler
 }
 
 func (f *flibustaSeries) crawl() error {
@@ -428,13 +566,15 @@ func (f *flibustaSeries) crawl() error {
 				continue
 			}
 
-			feedUrl := f.feed.ResolveReference(linkUrl)
+			linkUrl = f.feed.ResolveReference(linkUrl)
 
-			err = f.withFeed(feedUrl).crawl()
-			if er := new(consumerError); errors.As(err, &er) {
+			err = consumeError(
+				f.withFeed(linkUrl).crawl(),
+				types.MakeResumableSequences(linkUrl),
+				f.handler, l,
+			)
+			if err != nil {
 				return err
-			} else if err != nil {
-				l.Error("Ignore error while parsing nested feed " + entry.ID + ": " + err.Error())
 			}
 		} else if regTagSequence.MatchString(entry.ID) {
 			l.Debug("Found series description " + entry.ID)
@@ -467,11 +607,15 @@ func (f *flibustaSeries) crawl() error {
 				continue
 			}
 
-			err = f.sequence(f.feed.ResolveReference(linkUrl), series)
-			if er := new(consumerError); errors.As(err, &er) {
+			linkUrl = f.feed.ResolveReference(linkUrl)
+
+			err = consumeError(
+				f.sequence(linkUrl, series),
+				types.MakeResumableSeries(linkUrl, series),
+				f.handler, l,
+			)
+			if err != nil {
 				return err
-			} else if err != nil {
-				l.Error("Ignore error while parsing sequence " + entry.ID + ": " + err.Error())
 			}
 		} else {
 			l.Warn("Found unknown entry " + entry.ID)
@@ -483,7 +627,12 @@ func (f *flibustaSeries) crawl() error {
 		return err
 	}
 	if urlNextPage != nil {
-		return f.withFeed(f.feed.ResolveReference(urlNextPage)).crawl()
+		urlNextPage = f.feed.ResolveReference(urlNextPage)
+		return consumeError(
+			f.withFeed(urlNextPage).crawl(),
+			types.MakeResumableSequences(urlNextPage),
+			f.handler, l,
+		)
 	}
 
 	return nil
@@ -495,6 +644,7 @@ func (f *flibustaSeries) withFeed(feed *url.URL) *flibustaSeries {
 		logger:   f.logger,
 		feed:     feed,
 		consumer: f.consumer,
+		handler:  f.handler,
 	}
 }
 
@@ -547,6 +697,10 @@ func (f *flibustaSeries) sequence(seriesUrl *url.URL, series *types.Series) erro
 	return nil
 }
 
+type unresumableError interface {
+	isUnresumable()
+}
+
 type consumerError struct {
 	error
 }
@@ -563,6 +717,27 @@ func (e *consumerError) Format(f fmt.State, verb rune) {
 
 	_, _ = fmt.Fprintf(f, fmt.FormatString(f, verb), e.error)
 }
+
+func (e *consumerError) isUnresumable() {}
+
+type handlerError struct {
+	error
+}
+
+func (e *handlerError) Error() string {
+	return e.error.Error()
+}
+
+func (e *handlerError) Format(f fmt.State, verb rune) {
+	if er, ok := e.error.(fmt.Formatter); ok {
+		er.Format(f, verb)
+		return
+	}
+
+	_, _ = fmt.Fprintf(f, fmt.FormatString(f, verb), e.error)
+}
+
+func (e *handlerError) isUnresumable() {}
 
 type clLogger struct {
 	logger        *slog.Logger
@@ -758,7 +933,7 @@ func parseBook(entry *opds1.Entry, feedUrl *url.URL, l *slog.Logger) *types.Book
 // Inspect each rune for being a disallowed character.
 // Fucking litres sometimes include those characters
 func removeDisallowedCodepoints(bs []byte, l *slog.Logger) []byte {
-	ret := bs[:0]
+	ret := make([]byte, 0, len(bs))
 	buf := bs
 
 	for len(buf) > 0 {

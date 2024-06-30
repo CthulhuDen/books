@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"time"
 
 	_ "github.com/doug-martin/goqu/v9/dialect/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +20,7 @@ import (
 	"books/internal/logger"
 	"books/internal/storage/authors"
 	"books/internal/storage/books"
+	"books/internal/storage/fails"
 	"books/internal/storage/genres"
 	"books/internal/storage/series"
 )
@@ -90,7 +93,7 @@ func main() {
 
 	cr := crawler.Flibusta{Client: http.DefaultClient, Logger: slog.Default()}
 
-	consumer := crawler.StoringConsumer{
+	c := crawler.StoringConsumer{
 		Logger:  slog.Default(),
 		Books:   books.NewPGXRepository(pg, slog.Default()),
 		Authors: authors.NewPGXRepository(pg, slog.Default()),
@@ -98,9 +101,46 @@ func main() {
 		Series:  series.NewPGXRepository(pg, slog.Default()),
 	}
 
-	err = cr.Crawl(urlAuthors, urlSeries, &consumer)
+	if len(os.Args) > 1 && strings.ToLower(os.Args[1]) == "resume" {
+		t, err := time.Parse(time.DateTime, os.Args[2])
+		if err != nil {
+			slog.Error("Invalid start time provided: " + err.Error())
+			os.Exit(1)
+		}
+
+		err = resume(&t, &cr, fails.NewPGXRepository(pg, slog.Default()), &c)
+		if err != nil {
+			slog.Error("Resume failed: " + err.Error())
+			os.Exit(1)
+		}
+
+		os.Exit(0)
+	}
+
+	err = cr.Crawl(urlAuthors, urlSeries, &c, nil)
 	if err != nil {
 		slog.Error("Crawl failed: " + err.Error())
 		os.Exit(1)
 	}
+}
+
+func resume(startTime *time.Time, cr crawler.Crawler, fr fails.Repository, c crawler.Consumer) error {
+	fs, err := fr.GetFails(context.Background(), startTime)
+	if err != nil {
+		return fmt.Errorf("fetching list of fails: %w", err)
+	}
+
+	for _, f := range fs {
+		err := cr.Resume(f.Feed, c, nil)
+		if err != nil {
+			return fmt.Errorf("while resuming %s: %w", f.Feed.Url, err)
+		}
+
+		err = fr.DeleteById(context.Background(), f.Id)
+		if err != nil {
+			return fmt.Errorf("while deleting %s (#%v): %w", f.Feed.Url, f.Id, err)
+		}
+	}
+
+	return nil
 }
