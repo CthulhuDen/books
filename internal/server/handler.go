@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -20,6 +21,7 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 	rr *response.Responder) http.Handler {
 
 	r := chi.NewRouter()
+
 	r.Get("/genres", func(w http.ResponseWriter, r *http.Request) {
 		rows, err := gr.GetAll(r.Context())
 		if err != nil {
@@ -36,23 +38,31 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 		}{Titles: rows})
 	})
 
+	r.Get("/authors", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		rows, err := ar.Search(r.Context(), q.Get("search"),
+			getGenreIds(r.Context(), q, gr),
+			getIntOrDefault("limit", q, 10),
+		)
+
+		if err != nil {
+			rr.RespondAndLogError(w, r.Context(), err)
+			return
+		}
+
+		rr.SendJson(w, r.Context(), struct {
+			Authors []*types.Author `json:"authors"`
+		}{Authors: rows})
+	})
+
 	r.Get("/series", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 
-		var genreIds []uint16
-
-		genres_ := getMulti("genres", q)
-		if len(genres_) > 0 {
-			gs, err := gr.GetIdByTitles(r.Context(), genres_...)
-			if err == nil && len(gs) > 0 {
-				for _, genreId := range gs {
-					genreIds = append(genreIds, genreId)
-				}
-			}
-		}
-
-		rows, err := sr.Search(r.Context(), q.Get("search"), getIntOrDefault("limit", q, 10),
-			q.Get("author"), genreIds)
+		rows, err := sr.Search(r.Context(), q.Get("search"),
+			q.Get("author"), getGenreIds(r.Context(), q, gr),
+			getIntOrDefault("limit", q, 10),
+		)
 
 		if err != nil {
 			rr.RespondAndLogError(w, r.Context(), err)
@@ -68,48 +78,8 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 		}{Sequences: rows})
 	})
 
-	r.Get("/authors", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-
-		var genreIds []uint16
-
-		genres_ := getMulti("genres", q)
-		if len(genres_) > 0 {
-			gs, err := gr.GetIdByTitles(r.Context(), genres_...)
-			if err == nil && len(gs) > 0 {
-				for _, genreId := range gs {
-					genreIds = append(genreIds, genreId)
-				}
-			}
-		}
-
-		rows, err := ar.Search(r.Context(), q.Get("search"),
-			getIntOrDefault("limit", q, 10), genreIds)
-
-		if err != nil {
-			rr.RespondAndLogError(w, r.Context(), err)
-			return
-		}
-
-		rr.SendJson(w, r.Context(), struct {
-			Authors []*types.Author `json:"authors"`
-		}{Authors: rows})
-	})
-
 	r.Get("/books", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-
-		var genreIds []uint16
-
-		genres_ := getMulti("genres", q)
-		if len(genres_) > 0 {
-			gs, err := gr.GetIdByTitles(r.Context(), genres_...)
-			if err == nil && len(gs) > 0 {
-				for _, genreId := range gs {
-					genreIds = append(genreIds, genreId)
-				}
-			}
-		}
 
 		var groupings []books.GroupingType
 		for _, t := range getMulti("group", q) {
@@ -117,10 +87,10 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 		}
 
 		rows, err := br.Search(r.Context(), q.Get("search"),
-			getIntOrDefault("limit", q, 20), getIntOrDefault("offset", q, 0),
-			q.Get("author"), genreIds, q.Get("series"),
+			q.Get("author"), getGenreIds(r.Context(), q, gr), q.Get("series"),
 			uint16(getIntOrDefault("year_min", q, 0)),
 			uint16(getIntOrDefault("year_max", q, 0)),
+			getIntOrDefault("limit", q, 20), getIntOrDefault("offset", q, 0),
 			groupings...)
 
 		if err != nil {
@@ -178,10 +148,38 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 	return r
 }
 
+func Static(r chi.Router, openApiYaml, webDir string) {
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, openApiYaml)
+	})
+
+	for _, filename := range []string{"/rapidoc.html", "/redocly.html", "/swagger-ui.html", "/scalar.html"} {
+		r.Get(filename, func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, webDir+filename)
+		})
+	}
+}
+
+func getGenreIds(ctx context.Context, q url.Values, gr genres.Repository) []uint16 {
+	var genreIds []uint16
+
+	genres_ := getMulti("genre", q)
+	if len(genres_) > 0 {
+		gs, err := gr.GetIdByTitles(ctx, genres_...)
+		if err == nil && len(gs) > 0 {
+			for _, genreId := range gs {
+				genreIds = append(genreIds, genreId)
+			}
+		}
+	}
+
+	return genreIds
+}
+
 func getIntOrDefault(key string, q url.Values, default_ int) int {
 	if ls := q.Get(key); ls != "" {
 		limit, err := strconv.Atoi(ls)
-		if err != nil {
+		if err == nil {
 			return limit
 		}
 	}
@@ -190,8 +188,13 @@ func getIntOrDefault(key string, q url.Values, default_ int) int {
 }
 
 func getMulti(key string, q url.Values) []string {
-	var vals []string
-	for _, val := range strings.Split(q.Get(key), ",") {
+	raw, ok := q[key]
+	if !ok {
+		return nil
+	}
+
+	vals := make([]string, 0, len(raw))
+	for _, val := range raw {
 		val = strings.TrimSpace(val)
 		if val != "" {
 			vals = append(vals, val)

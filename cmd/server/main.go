@@ -45,6 +45,9 @@ var (
 	dbConnStr = os.Getenv("DATABASE_URL")
 	bindAddr  = getEnvOrDefault("BIND_ADDR", ":8080")
 	debugMode = getBoolEnv("DEBUG_MODE")
+
+	webDir      = getEnvOrDefault("WEB_DIR", "/web")
+	openApiYaml = getEnvOrDefault("OPENAPI_YAML", webDir+"/openapi.yaml")
 )
 
 func main() {
@@ -86,6 +89,8 @@ func main() {
 		series.NewPGXRepository(pg, slog.Default()),
 		&response.Responder{DebugMode: debugMode},
 	))
+
+	server.Static(r, openApiYaml, webDir)
 
 	slog.Error("aborting: " + http.ListenAndServe(bindAddr, r).Error())
 	os.Exit(1)

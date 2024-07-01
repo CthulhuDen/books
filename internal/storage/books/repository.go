@@ -25,8 +25,9 @@ type Repository interface {
 	LinkBookAndGenres(ctx context.Context, bookId string, genreIds ...uint16) error
 	LinkSeriesWithBooks(ctx context.Context, seriesId string, bookIds ...string) error
 
-	Search(ctx context.Context, query string, limit, offset int,
+	Search(ctx context.Context, query string,
 		authorId string, genreIds []uint16, seriesId string,
 		yearMin, yearMax uint16,
+		limit, offset int,
 		groupings ...GroupingType) ([]BookInGroup, error)
 }

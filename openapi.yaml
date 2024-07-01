@@ -1,0 +1,279 @@
+openapi: 3.0.0
+
+info:
+  title: Books API
+  version: 1.0.0
+  description: API for getting genres and searching books, authors, series
+
+servers:
+  - url: /api
+  - url: https://books.cden.app/api
+
+security: [ ]
+
+paths:
+  /genres:
+    get:
+      summary: Get all genres
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  titles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenreTitle'
+  /authors:
+    get:
+      summary: Search authors
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Term to search in the author name
+        - name: genre
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/GenreTitle'
+          description: Multiple full and unaltered genre titles can be provided
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Author'
+
+  /series:
+    get:
+      summary: Search series
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Term to search in the series title
+        - name: author
+          in: query
+          schema:
+            $ref: '#/components/schemas/AuthorId'
+        - name: genre
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/GenreTitle'
+          description: Multiple full and unaltered genre titles can be provided
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sequences:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Series'
+
+  /books:
+    get:
+      summary: Search books
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Term to search in the series title
+        - name: author
+          in: query
+          schema:
+            $ref: '#/components/schemas/AuthorId'
+        - name: genre
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/GenreTitle'
+          description: Multiple genre titles can be provided
+        - name: series
+          in: query
+          schema:
+            $ref: '#/components/schemas/SeriesId'
+        - name: year_min
+          in: query
+          schema:
+            type: integer
+        - name: year_max
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: group
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/BooksGroupingType'
+          description: Multiple grouping types can be provided
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  books:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BookInGroup'
+                  authors:
+                    type: object
+                    additionalProperties:
+                      $ref: '#/components/schemas/Author'
+                  series:
+                    type: object
+                    additionalProperties:
+                      $ref: '#/components/schemas/Series'
+
+components:
+  schemas:
+    GenreTitle:
+      type: string
+
+    BooksGroupingType:
+      type: string
+      enum:
+        - author
+        - genres
+        - series
+
+    AuthorId:
+      type: string
+
+    Author:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/AuthorId'
+        name:
+          type: string
+        bio:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+
+    SeriesId:
+      type: string
+
+    Series:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/SeriesId'
+        title:
+          type: string
+
+    InSeries:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/SeriesId'
+        order:
+          type: integer
+
+    Book:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        author_ids:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthorId'
+          description: Unique and sorted by (unspecified priority in the source)
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/InSeries'
+        genres:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenreTitle'
+          description: Unique and sorted by alphabet
+        language:
+          type: string
+        year:
+          type: integer
+        about:
+          type: string
+          nullable: true
+        cover_url:
+          type: string
+          nullable: true
+
+    BookInGroup:
+      type: object
+      properties:
+        book:
+          $ref: '#/components/schemas/Book'
+        group:
+          type: array
+          items:
+            oneOf:
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - author
+                      - series
+                  value:
+                    type: string
+              - type: object
+                properties:
+                  type:
+                    type: string
+                    enum:
+                      - genres
+                  value:
+                    type: array
+                    items:
+                      type: string

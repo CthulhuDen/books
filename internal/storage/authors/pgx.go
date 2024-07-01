@@ -135,9 +135,9 @@ func (p *pgxRepo) Save(ctx context.Context, authors ...*types.Author) error {
 	return err
 }
 
-func (p *pgxRepo) Search(ctx context.Context, query string, limit int, genreIds []uint16) ([]*types.Author, error) {
+func (p *pgxRepo) Search(ctx context.Context, query string, genreIds []uint16, limit int) ([]*types.Author, error) {
 	qb := p.g.From("author").
-		Order(goqu.C("name").Asc()).
+		Order(goqu.C("name").Asc()). // todo sort by relevance? (aka number of books of matching genre, perhaps)
 		Limit(uint(limit))
 
 	for _, word := range strings.Split(query, " ") {

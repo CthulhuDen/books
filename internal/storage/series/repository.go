@@ -13,5 +13,5 @@ type Repository interface {
 
 	Save(ctx context.Context, sequences ...*types.Series) error
 
-	Search(ctx context.Context, query string, limit int, authorId string, genreIds []uint16) ([]*types.Series, error)
+	Search(ctx context.Context, query string, authorId string, genreIds []uint16, limit int) ([]*types.Series, error)
 }
