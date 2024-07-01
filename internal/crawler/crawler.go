@@ -33,12 +33,12 @@ const (
 var (
 	regLinkTypeImage = regexp.MustCompile("^image/[^/]+$")
 
-	regTagAuthors     = regexp.MustCompile("^tag:authors:[^:]+$")
+	regTagAuthors     = regexp.MustCompile("^tag:authors:")
 	regTagAuthor      = regexp.MustCompile("^tag:author:(\\d+)$")
 	regTagBio         = regexp.MustCompile("^tag:author:bio:\\d+$")
 	regTagAuthorBooks = regexp.MustCompile("^tag:author:\\d+:alphabet$")
 	regTagBook        = regexp.MustCompile("^tag:book:[^:]+$")
-	regTagSeries      = regexp.MustCompile("^tag:sequences:[^:]+$")
+	regTagSeries      = regexp.MustCompile("^tag:sequences:")
 	regTagSequence    = regexp.MustCompile("^tag:sequence:\\d+$")
 
 	regHrefAuthor    = regexp.MustCompile("^/opds/author/\\d+$")

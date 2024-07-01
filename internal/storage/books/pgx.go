@@ -318,8 +318,9 @@ func (p *pgxRepo) LinkSeriesWithBooks(ctx context.Context, seriesId string, book
 	return err
 }
 
-func (p *pgxRepo) Search(ctx context.Context, query string, limit int, offset int,
+func (p *pgxRepo) Search(ctx context.Context, query string, limit, offset int,
 	authorId string, genreIds []uint16, seriesId string,
+	yearMin, yearMax uint16,
 	groupings ...GroupingType) ([]BookInGroup, error) {
 
 	qb := p.g.From("book").
@@ -426,6 +427,14 @@ func (p *pgxRepo) Search(ctx context.Context, query string, limit int, offset in
 			//)).
 			Where(goqu.C("series_id").Eq(seriesId)).
 			OrderAppend(goqu.C("book_order").Asc())
+	}
+
+	if yearMin > 0 {
+		qb = qb.Where(goqu.C("year").Gte(yearMin))
+	}
+
+	if yearMax > 0 {
+		qb = qb.Where(goqu.C("year").Lte(yearMax))
 	}
 
 	sql, params, err := qb.

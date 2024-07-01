@@ -118,7 +118,10 @@ func Handler(ar authors.Repository, br books.Repository, gr genres.Repository, s
 
 		rows, err := br.Search(r.Context(), q.Get("search"),
 			getIntOrDefault("limit", q, 20), getIntOrDefault("offset", q, 0),
-			q.Get("author"), genreIds, q.Get("series"), groupings...)
+			q.Get("author"), genreIds, q.Get("series"),
+			uint16(getIntOrDefault("year_min", q, 0)),
+			uint16(getIntOrDefault("year_max", q, 0)),
+			groupings...)
 
 		if err != nil {
 			rr.RespondAndLogError(w, r.Context(), err)

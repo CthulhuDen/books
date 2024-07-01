@@ -75,8 +75,7 @@ func (p *pgxRepo) Save(ctx context.Context, startTime *time.Time, feed types.Res
 func (p *pgxRepo) GetFails(ctx context.Context, notAfter *time.Time, limit uint) ([]*Record, error) {
 	sql, params, err := p.g.From("fail").
 		Where(goqu.C("start_time").Lte(notAfter)).
-		Order(goqu.C("start_time").Asc()).
-		Order(goqu.C("id").Asc()).
+		Order(goqu.C("start_time").Asc(), goqu.C("id").Asc()).
 		Limit(limit).
 		ToSQL()
 	if err != nil {
