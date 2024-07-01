@@ -24,5 +24,3 @@ COPY --from=build /server /
 COPY db /db
 COPY web /web
 COPY openapi.yaml web/
-
-RUN ls -la /web && exit 1
